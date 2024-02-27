@@ -13,5 +13,23 @@
       ]
     }
   },
+  // there's no consistency in proxy variables
+  // https://about.gitlab.com/blog/2021/01/27/we-need-to-talk-no-proxy/
+  "containerEnv": {
+    "http_proxy": "http://host.docker.internal:3128",
+    "https_proxy": "http://host.docker.internal:3128",
+    "no_proxy": "${localEnv:no_proxy}",
+    "HTTP_PROXY": "http://host.docker.internal:3128",
+    "HTTPS_PROXY": "http://host.docker.internal:3128",
+    "NO_PROXY": "${localEnv:no_proxy}"
+  },
+  "remoteEnv": {
+    "http_proxy": "http://host.docker.internal:3128",
+    "https_proxy": "http://host.docker.internal:3128",
+    "no_proxy": "${localEnv:no_proxy}",
+    "HTTP_PROXY": "http://host.docker.internal:3128",
+    "HTTPS_PROXY": "http://host.docker.internal:3128",
+    "NO_PROXY": "${localEnv:no_proxy}",
+  },
   "postAttachCommand": "python3 -m pip install poetry && poetry install && poetry run uvscem --config-name ${HOME}/devcontainer.json"
 }
