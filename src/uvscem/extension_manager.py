@@ -231,7 +231,9 @@ class CodeExtensionManager(object):
 
             # also repeat this step for the packages listed in extension pack
             for ep in metadata.get("extension_pack"):
-                self.install_extension(ep, extension_pack=True)
+                self.install_extension(
+                    self.extensions.pop(self.extensions.index(ep)), extension_pack=True
+                )
                 manually_installed.append(ep)
 
             self.update_extensions_json(extension_ids=manually_installed)
