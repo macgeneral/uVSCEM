@@ -31,5 +31,11 @@
     "HTTPS_PROXY": "http://host.docker.internal:3128",
     "NO_PROXY": "${localEnv:no_proxy}",
   },
+  // for Cntlm running on localhost you could expose it to both host and container
+  // by adding '127.0.0.1   localproxy' to your host's file in /etc/host
+  // and configuring your user settings in VSCode to > "http.proxy": "http://localproxy:3128"
+  "runArgs": [
+    "--add-host=localproxy:host-gateway"
+  ],
   "postAttachCommand": "python3 -m pip install poetry && poetry install && poetry run uvscem --config-name ${HOME}/devcontainer.json"
 }
