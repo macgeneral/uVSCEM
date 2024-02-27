@@ -1,4 +1,6 @@
 #! /bin/env python3
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -19,7 +21,7 @@ from dependency_algorithm import Dependencies
 from uvscem.api_client import CodeAPIManager
 from uvscem.code_manager import CodeManager
 
-__author__ = "Arne Fahrenwalde"
+__author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
 # attempt to install an extension a maximum of three times

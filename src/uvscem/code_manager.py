@@ -1,4 +1,6 @@
 #! /bin/env python3
+from __future__ import annotations
+
 import logging
 import os
 import shlex
@@ -9,7 +11,7 @@ from pathlib import Path
 # for parsing devcontainer.json (if it includes comments etc.)
 import typer
 
-__author__ = "Arne Fahrenwalde"
+__author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
 # attempt to install an extension a maximum of three times
@@ -76,14 +78,14 @@ class CodeManager(object):
         latest_version = vscode_versions.get(max(vscode_versions.keys()))
         # VSCode uses symlinks to /vscode/
         self.code_path = (
-            vscode_dir.joinpath(f"{latest_version.get("commit")}")
+            vscode_dir.joinpath(f"{latest_version.get('commit')}")
             .resolve()
             .joinpath("bin/remote-cli/")
         )
 
         if update_environment:
             logger.debug(
-                f"Adding Code [{self.code_path}] to $PATH\n  - Version: {latest_version.get("version")} | Commit: {latest_version.get("commit")}"
+                f"Adding Code [{self.code_path}] to $PATH\n  - Version: {latest_version.get('version')} | Commit: {latest_version.get('commit')}"
             )
             current_path = os.environ.get("PATH")
             vscode_path = f"{self.code_path}"

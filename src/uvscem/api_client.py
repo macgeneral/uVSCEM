@@ -1,4 +1,6 @@
 #! /bin/env python3
+from __future__ import annotations
+
 import datetime
 import logging
 from pathlib import Path
@@ -8,7 +10,7 @@ import requests
 import typer
 from requests.adapters import HTTPAdapter, Retry
 
-__author__ = "Arne Fahrenwalde"
+__author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
 # attempt to install an extension a maximum of three times
@@ -234,9 +236,9 @@ class CodeAPIManager(object):
                             "metadata": {
                                 "installedTimestamp": int(
                                     (
-                                        datetime.datetime.now(datetime.UTC)
+                                        datetime.datetime.now(datetime.timezone.utc)
                                         - datetime.datetime(
-                                            1970, 1, 1, tzinfo=datetime.UTC
+                                            1970, 1, 1, tzinfo=datetime.timezone.utc
                                         )
                                     ).total_seconds()
                                     * 1000

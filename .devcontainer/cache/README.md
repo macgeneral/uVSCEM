@@ -1,0 +1,1 @@
+This folder is used as bind mount within a DevContainer as cache directory
