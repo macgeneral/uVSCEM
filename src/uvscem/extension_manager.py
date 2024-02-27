@@ -56,10 +56,15 @@ class CodeExtensionManager(object):
         self.api_manager = CodeAPIManager()
         self.socket_manager = CodeManager()
         self.code_binary = code_path
-        self.dev_container_config_path = Path.joinpath(
-            Path(__file__).parent.resolve(),
-            config_name,
-        ).absolute()
+        self.dev_container_config_path = (
+            Path(config_name)
+            if config_name.startswith("/")
+            else Path.cwd()
+            .joinpath(
+                f"{config_name}",
+            )
+            .absolute()
+        )
         self.extensions = self.parse_all_extensions()
         self.installed = self.find_installed()
         self.target_path = (

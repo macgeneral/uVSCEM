@@ -1,15 +1,17 @@
 {
   "image": "mcr.microsoft.com/devcontainers/python:3.8-bookworm",
   "mounts": [
-    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=${HOME}/devcontainer.json,type=bind,consistency=cached"
+    "source=/${localWorkspaceFolder}/.devcontainer/cache,target=/home/vscode/cache,type=bind,consistency=cached",
+    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=/home/vscode/devcontainer.json,type=bind,consistency=cached"
   ],
   "customizations": {
     "vscode": {
       "extensions": [
         "streetsidesoftware.code-spell-checker",
-        "ms-python.python"
+        "ms-python.python",
+        "charliermarsh.ruff"
       ]
     }
   },
-  "postAttachCommand": "python3 -m pip install poetry && poetry install && poetry run uvscem --config-name ${HOME}.devcontainer/devcontainer.json"
+  "postAttachCommand": "python3 -m pip install poetry && poetry install && poetry run uvscem --config-name ${HOME}/devcontainer.json"
 }
