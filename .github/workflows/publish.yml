@@ -12,7 +12,7 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
 
     steps:
@@ -118,6 +118,14 @@ jobs:
         with:
           version: "0.10.6"
           checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install dependencies
+        if: steps.release_tag.outputs.should_publish == 'true'
+        run: uv sync --frozen --group publish
 
       - name: Build distributions
         if: steps.release_tag.outputs.should_publish == 'true'
@@ -126,3 +134,13 @@ jobs:
       - name: Publish to PyPI
         if: steps.release_tag.outputs.should_publish == 'true'
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        with:
+          attestations: true
+
+      - name: Create GitHub Release
+        if: steps.release_tag.outputs.should_publish == 'true'
+        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        with:
+          tag_name: ${{ steps.release_tag.outputs.release_tag }}
+          generate_release_notes: true
+          make_latest: true

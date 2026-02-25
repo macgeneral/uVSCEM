@@ -656,6 +656,9 @@ dev = [
     { name = "ty" },
     { name = "uv-dynamic-versioning" },
 ]
+publish = [
+    { name = "uv-dynamic-versioning" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -671,3 +674,4 @@ dev = [
     { name = "ty", specifier = ">=0.0.18" },
     { name = "uv-dynamic-versioning", specifier = ">=0.8.0" },
 ]
+publish = [{ name = "uv-dynamic-versioning", specifier = ">=0.8.0" }]

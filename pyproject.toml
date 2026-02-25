@@ -25,6 +25,9 @@ dev = [
 	"pytest-cov>=5.0.0",
 	"uv-dynamic-versioning>=0.8.0",
 ]
+publish = [
+	"uv-dynamic-versioning>=0.8.0",
+]
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
