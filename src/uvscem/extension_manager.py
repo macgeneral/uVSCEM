@@ -31,6 +31,7 @@ from uvscem.vsce_sign_bootstrap import (
     install_vsce_sign_binary_for_target,
     provision_vsce_sign_binary_for_run,
 )
+from uvscem.vscode_paths import resolve_vscode_root
 
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
@@ -39,7 +40,7 @@ __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 max_retries = 3
 user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
 # VSCode extension installation directory
-vscode_root: Path = Path.home().joinpath(".vscode-server").absolute()
+vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
 
 
@@ -120,17 +121,33 @@ class CodeExtensionManager(object):
         parsed_config: dict[str, Any] = await asyncio.to_thread(
             lambda: json5.loads(self.dev_container_config_path.read_text())
         )
-        extensions: list[str] = list(
+        raw_extensions: list[str] = list(
             parsed_config.get("customizations", {})
             .get("vscode", {})
             .get("extensions", [])
         )
+        extension_pins: dict[str, str] = {}
+        extensions: list[str] = []
+
+        for extension_spec in raw_extensions:
+            extension_id, pinned_version = self.parse_extension_spec(extension_spec)
+            extensions.append(extension_id)
+            if pinned_version:
+                extension_pins[extension_id] = pinned_version
 
         for extension_id in extensions:
-            metadata = await self.api_manager.get_extension_metadata(extension_id)
-            # only store the results for the latest version
+            pinned_version = extension_pins.get(extension_id, "")
+            metadata = await self.api_manager.get_extension_metadata(
+                extension_id,
+                include_latest_stable_version_only=not bool(pinned_version),
+                requested_version=pinned_version,
+            )
             versions = metadata.get(extension_id, [])
             if not versions:
+                if pinned_version:
+                    raise ValueError(
+                        f"Pinned extension version not found: {extension_id}@{pinned_version}"
+                    )
                 continue
             metadata = versions[0]
             self.extension_metadata[extension_id] = metadata
@@ -148,6 +165,19 @@ class CodeExtensionManager(object):
         # get installation order
         dependencies = Dependencies(self.extension_dependencies)
         return dependencies.resolve_dependencies()
+
+    def parse_extension_spec(self, extension_spec: str) -> tuple[str, str]:
+        spec = extension_spec.strip()
+        if not spec:
+            return "", ""
+        if "@" not in spec:
+            return spec, ""
+        extension_id, _, requested_version = spec.rpartition("@")
+        extension_id = extension_id.strip()
+        requested_version = requested_version.strip()
+        if not extension_id or not requested_version:
+            return spec, ""
+        return extension_id, requested_version
 
     def get_dirname(self, extension_id: str) -> str:
         version: str = str(

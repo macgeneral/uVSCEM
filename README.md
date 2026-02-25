@@ -20,6 +20,12 @@ It helps when normal extension installation fails because of proxy issues, contr
 - VS Code CLI (`code`) available in your environment
 - Access to your `devcontainer.json`
 
+## Platform support
+
+uVSCEM auto-detects common VS Code runtime environments and can fall back to local CLI discovery on macOS and Windows.
+
+The primary tested target is still Linux, especially DevContainer and VS Code Remote (`.vscode-server`) environments.
+
 ## Install
 
 ```bash
@@ -46,6 +52,20 @@ Install extensions directly:
 
 ```bash
 uvscem install --config-name ./devcontainer.json
+```
+
+Pinning is supported in `devcontainer.json` using `publisher.extension@version`:
+
+```json
+{
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint@3.0.10"
+      ]
+    }
+  }
+}
 ```
 
 Export an offline bundle:
@@ -82,3 +102,9 @@ uVSCEM is a practical workaround for known VS Code proxy/devcontainer limitation
 ## Contributing
 
 Development setup, testing, and release details are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## A big thank you to the following people
+
+- [Jossef Harush Kadouri](http://jossef.com/) for [this GitHub Gist](https://gist.github.com/jossef/8d7681ac0c7fd28e93147aa5044bc129) on how to query the undocumented VisualStudio Code Marketplace API, which I used as blueprint for [`api_client.py`](https://github.com/macgeneral/uVSCEM/blob/main/src/uvscem/api_client.py).
+- [Ian McKellar](https://ianloic.com) for his blog post ["VSCode Remote and the command line"](https://ianloic.com/2021/02/16/vscode-remote-and-the-command-line/)  (notable mention: Lazy Ren@Stackoverflow for [this answer](https://stackoverflow.com/a/67916473) pointing me in this direction).
+- [Michael Petrov](http://michaelpetrov.com) for [this answer](https://stackoverflow.com/a/62277798) on StackOverflow on how to test if a socket is closed in python.

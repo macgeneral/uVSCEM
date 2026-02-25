@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import shlex
+import shutil
 import socket
 import tempfile
 from pathlib import Path
@@ -12,12 +13,13 @@ from pathlib import Path
 # for parsing devcontainer.json (if it includes comments etc.)
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
+from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
 
 # attempt to install an extension a maximum of three times
 max_retries = 3
 user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
 # VSCode extension installation directory
-vscode_root: Path = Path.home().joinpath(".vscode-server").absolute()
+vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
 
 
@@ -33,6 +35,16 @@ class CodeManager(object):
 
     def _find_socket_sync(self, update_environment: bool = False) -> None:
         """Find all VSCode Unix sockets."""
+        existing_hook = os.environ.get("VSCODE_IPC_HOOK_CLI", "").strip()
+        if existing_hook:
+            self.socket_path = Path(existing_hook)
+            if update_environment:
+                os.environ["VSCODE_IPC_HOOK_CLI"] = existing_hook
+            return
+
+        if os.name == "nt":
+            return
+
         # VSCode uses either /run/userid/ or /tmp/ if not set
         socket_dir: Path = Path(
             os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())
@@ -56,9 +68,13 @@ class CodeManager(object):
 
     def _find_latest_code_sync(self, update_environment: bool = False) -> None:
         """Find all 'code' executables."""
+        runtime_environment = detect_runtime_environment()
         vscode_versions: dict = {}
         vscode_dir: Path = vscode_root.joinpath("bin")
-        executables: list = list(vscode_dir.glob("*/bin/remote-cli/code"))
+        executables: list[Path] = []
+
+        if runtime_environment in {"vscode-server", "vscode-remote"}:
+            executables = list(vscode_dir.glob("*/bin/remote-cli/code"))
 
         for vsc in executables:
             # try to parse the important values from the shell script directly
@@ -76,37 +92,41 @@ class CodeManager(object):
                         "commit": commit,
                     }
 
-        if not vscode_versions:
-            logger.warning("No VSCode remote CLI executable found")
-            return
-
-        latest_version = vscode_versions.get(max(vscode_versions.keys()))
-        if latest_version is None:
-            logger.warning("Unable to determine latest VSCode version")
-            return
-        # VSCode uses symlinks to /vscode/
-        self.code_path = (
-            vscode_dir.joinpath(f"{latest_version.get('commit')}")
-            .resolve()
-            .joinpath("bin/remote-cli/")
-        )
+        if vscode_versions:
+            latest_version = vscode_versions.get(max(vscode_versions.keys()))
+            if latest_version is None:
+                logger.warning("Unable to determine latest VSCode version")
+                return
+            self.code_path = (
+                vscode_dir.joinpath(f"{latest_version.get('commit')}")
+                .resolve()
+                .joinpath("bin/remote-cli/")
+            )
+        else:
+            code_binary = shutil.which("code") or shutil.which("code-insiders")
+            if not code_binary:
+                logger.warning("No VSCode CLI executable found")
+                return
+            self.code_path = Path(code_binary).resolve().parent
 
         if update_environment:
-            logger.debug(
-                f"Adding Code [{self.code_path}] to $PATH\n  - Version: {latest_version.get('version')} | Commit: {latest_version.get('commit')}"
-            )
+            logger.debug(f"Adding Code [{self.code_path}] to $PATH")
             current_path = os.environ.get("PATH", "")
             vscode_path = f"{self.code_path}"
             if vscode_path in current_path:
-                reordered_path = current_path.split(":")
+                reordered_path = current_path.split(os.pathsep)
                 # seems like the PATH is a bit messed up in VSCode, remove all duplicate entries
                 no_duplicates = list(dict.fromkeys(reordered_path))
                 no_duplicates.remove(vscode_path)
                 # place the code cli as first entry
                 no_duplicates.insert(0, vscode_path)
-                os.environ["PATH"] = ":".join(no_duplicates)
+                os.environ["PATH"] = os.pathsep.join(no_duplicates)
             else:
-                os.environ["PATH"] = f"{vscode_path}:{current_path}"
+                os.environ["PATH"] = (
+                    f"{vscode_path}{os.pathsep}{current_path}"
+                    if current_path
+                    else vscode_path
+                )
 
     @staticmethod
     def is_socket_closed(socket_path: Path) -> bool:

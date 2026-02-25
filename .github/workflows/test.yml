@@ -9,10 +9,11 @@ on:
 jobs:
   tests:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
@@ -50,4 +51,5 @@ jobs:
         run: uv run pytest src
 
       - name: Integration tests
+        if: runner.os == 'Linux'
         run: uv run pytest src --slow --no-cov

@@ -57,6 +57,29 @@ def test_dependency_helpers(bare_manager: CodeExtensionManager) -> None:
     assert extensions == ["one", "two"]
 
 
+def test_parse_extension_spec_supports_pinned_versions(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    assert bare_manager.parse_extension_spec("   ") == ("", "")
+    assert bare_manager.parse_extension_spec("publisher.name") == (
+        "publisher.name",
+        "",
+    )
+    assert bare_manager.parse_extension_spec("publisher.name@") == (
+        "publisher.name@",
+        "",
+    )
+    assert bare_manager.parse_extension_spec("@1.2.3") == ("@1.2.3", "")
+    assert bare_manager.parse_extension_spec("publisher.name@1.2.3") == (
+        "publisher.name",
+        "1.2.3",
+    )
+    assert bare_manager.parse_extension_spec("publisher.name@1.2.3-pre") == (
+        "publisher.name",
+        "1.2.3-pre",
+    )
+
+
 def test_init_sets_paths_and_creates_target_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -123,7 +146,7 @@ def test_parse_all_extensions_collects_metadata_and_dependencies(
         "pack.one": [{"version": "1.0.0", "dependencies": [], "extension_pack": []}],
     }
 
-    async def _metadata(extension_id: str):
+    async def _metadata(extension_id: str, **_kwargs):
         return {extension_id: metadata_map[extension_id]}
 
     bare_manager.api_manager = cast(
@@ -144,6 +167,108 @@ def test_parse_all_extensions_collects_metadata_and_dependencies(
     assert resolved == ["dep.one", "pack.one", "publisher.alpha"]
     assert bare_manager.extension_dependencies["publisher.alpha"] == {"dep.one"}
     assert bare_manager.extension_metadata["publisher.alpha"]["version"] == "1.0.0"
+
+
+def test_parse_all_extensions_resolves_pinned_versions(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare_manager.dev_container_config_path.write_text("{}")
+
+    monkeypatch.setattr(
+        extension_manager.json5,
+        "loads",
+        lambda _value: {
+            "customizations": {
+                "vscode": {"extensions": ["publisher.alpha@1.9.0", "publisher.beta"]}
+            }
+        },
+    )
+
+    calls: list[tuple[str, bool, str]] = []
+
+    async def _metadata(
+        extension_id: str,
+        include_latest_stable_version_only: bool = True,
+        requested_version: str = "",
+        **_kwargs,
+    ):
+        calls.append(
+            (extension_id, include_latest_stable_version_only, requested_version)
+        )
+        if extension_id == "publisher.alpha":
+            return {
+                extension_id: [
+                    {
+                        "version": "1.9.0",
+                        "dependencies": [],
+                        "extension_pack": [],
+                    }
+                ]
+            }
+        return {
+            extension_id: [
+                {
+                    "version": "2.0.0",
+                    "dependencies": [],
+                    "extension_pack": [],
+                }
+            ]
+        }
+
+    bare_manager.api_manager = cast(
+        Any, SimpleNamespace(get_extension_metadata=_metadata)
+    )
+
+    class _Dependencies:
+        def __init__(self, deps):
+            self.deps = deps
+
+        def resolve_dependencies(self):
+            return ["publisher.alpha", "publisher.beta"]
+
+    monkeypatch.setattr(extension_manager, "Dependencies", _Dependencies)
+
+    resolved = asyncio.run(bare_manager.parse_all_extensions())
+
+    assert resolved == ["publisher.alpha", "publisher.beta"]
+    assert bare_manager.extension_metadata["publisher.alpha"]["version"] == "1.9.0"
+    assert bare_manager.extension_metadata["publisher.beta"]["version"] == "2.0.0"
+    assert calls == [
+        ("publisher.alpha", False, "1.9.0"),
+        ("publisher.beta", True, ""),
+    ]
+
+
+def test_parse_all_extensions_raises_when_pinned_version_missing(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare_manager.dev_container_config_path.write_text("{}")
+
+    monkeypatch.setattr(
+        extension_manager.json5,
+        "loads",
+        lambda _value: {
+            "customizations": {"vscode": {"extensions": ["publisher.alpha@9.9.9"]}}
+        },
+    )
+
+    async def _metadata(
+        extension_id: str,
+        include_latest_stable_version_only: bool = True,
+        requested_version: str = "",
+        **_kwargs,
+    ):
+        del extension_id, include_latest_stable_version_only, requested_version
+        return {"publisher.alpha": []}
+
+    bare_manager.api_manager = cast(
+        Any, SimpleNamespace(get_extension_metadata=_metadata)
+    )
+
+    with pytest.raises(ValueError, match="Pinned extension version not found"):
+        asyncio.run(bare_manager.parse_all_extensions())
 
 
 def test_install_async_iterates_extensions_and_sleeps(

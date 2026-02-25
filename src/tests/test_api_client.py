@@ -254,6 +254,37 @@ def test_get_extension_metadata_handles_extension_without_versions() -> None:
     assert result == {"publisher.name": []}
 
 
+def test_get_extension_metadata_can_select_requested_version() -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+    manager._get_vscode_extension_sync = lambda **_kwargs: [_build_extension_payload()]
+
+    result = asyncio.run(
+        manager.get_extension_metadata(
+            "publisher.name",
+            include_latest_stable_version_only=False,
+            requested_version="2.0.0-pre",
+        )
+    )
+    versions = result["publisher.name"]
+
+    assert [item["version"] for item in versions] == ["2.0.0-pre"]
+
+
+def test_get_extension_metadata_requested_version_returns_empty_when_missing() -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+    manager._get_vscode_extension_sync = lambda **_kwargs: [_build_extension_payload()]
+
+    result = asyncio.run(
+        manager.get_extension_metadata(
+            "publisher.name",
+            include_latest_stable_version_only=False,
+            requested_version="9.9.9",
+        )
+    )
+
+    assert result == {"publisher.name": []}
+
+
 def test_async_api_methods_use_private_sync_helpers() -> None:
     manager = CodeAPIManager.__new__(CodeAPIManager)
     manager._get_vscode_extension_sync = lambda **_kwargs: [

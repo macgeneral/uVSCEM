@@ -31,6 +31,7 @@ def test_find_socket_removes_stale_and_sets_environment(
     manager.socket_path = None
     manager.code_path = None
 
+    monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setattr(
         CodeManager,
@@ -52,6 +53,7 @@ def test_find_socket_without_any_socket_keeps_environment_unchanged(
     manager.socket_path = None
     manager.code_path = None
 
+    monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setattr(
         CodeManager,
@@ -66,6 +68,50 @@ def test_find_socket_without_any_socket_keeps_environment_unchanged(
     assert "VSCODE_IPC_HOOK_CLI" not in os.environ
 
 
+def test_find_socket_uses_existing_hook_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", "/tmp/vscode-existing.sock")
+    asyncio.run(manager.find_socket(update_environment=True))
+
+    assert manager.socket_path == Path("/tmp/vscode-existing.sock")
+    assert os.environ["VSCODE_IPC_HOOK_CLI"] == "/tmp/vscode-existing.sock"
+
+
+def test_find_socket_uses_existing_hook_without_environment_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", "/tmp/vscode-existing.sock")
+    asyncio.run(manager.find_socket(update_environment=False))
+
+    assert manager.socket_path == Path("/tmp/vscode-existing.sock")
+
+
+def test_find_socket_windows_without_hook_returns_early(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(code_manager.os, "name", "nt", raising=False)
+
+    asyncio.run(manager.find_socket(update_environment=True))
+
+    assert manager.socket_path is None
+
+
 def test_find_socket_keeps_first_active_when_multiple_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -78,6 +124,7 @@ def test_find_socket_keeps_first_active_when_multiple_active(
     manager.socket_path = None
     manager.code_path = None
 
+    monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setattr(
         CodeManager, "is_socket_closed", staticmethod(lambda _path: False)
@@ -109,6 +156,9 @@ def test_find_latest_code_updates_path(
     manager.code_path = None
 
     monkeypatch.setattr(code_manager, "vscode_root", root)
+    monkeypatch.setattr(
+        code_manager, "detect_runtime_environment", lambda: "vscode-server"
+    )
     monkeypatch.setenv("PATH", "")
 
     asyncio.run(manager.find_latest_code(update_environment=True))
@@ -127,8 +177,14 @@ def test_find_latest_code_reorders_when_path_has_duplicates(
     )
 
     expected = str(root / "bin" / "commit9" / "bin" / "remote-cli")
-    monkeypatch.setenv("PATH", f"alpha:{expected}:beta:{expected}")
+    monkeypatch.setenv(
+        "PATH",
+        f"alpha{os.pathsep}{expected}{os.pathsep}beta{os.pathsep}{expected}",
+    )
     monkeypatch.setattr(code_manager, "vscode_root", root)
+    monkeypatch.setattr(
+        code_manager, "detect_runtime_environment", lambda: "vscode-server"
+    )
 
     manager = CodeManager.__new__(CodeManager)
     manager.socket_path = None
@@ -153,7 +209,10 @@ def test_find_latest_code_without_environment_update_keeps_path(
     manager.code_path = None
 
     monkeypatch.setattr(code_manager, "vscode_root", root)
-    monkeypatch.setenv("PATH", "alpha:beta")
+    monkeypatch.setattr(
+        code_manager, "detect_runtime_environment", lambda: "vscode-server"
+    )
+    monkeypatch.setenv("PATH", f"alpha{os.pathsep}beta")
 
     asyncio.run(manager.find_latest_code(update_environment=False))
 
@@ -170,11 +229,15 @@ def test_find_latest_code_handles_missing_or_invalid_versions(
     manager.code_path = None
 
     monkeypatch.setattr(code_manager, "vscode_root", root)
+    monkeypatch.setattr(
+        code_manager, "detect_runtime_environment", lambda: "vscode-server"
+    )
+    monkeypatch.setattr(code_manager.shutil, "which", lambda _name: None)
 
     with caplog.at_level("WARNING"):
         asyncio.run(manager.find_latest_code(update_environment=True))
 
-    assert "No VSCode remote CLI executable found" in caplog.text
+    assert "No VSCode CLI executable found" in caplog.text
 
     _write_code_launcher(
         root / "bin" / "commit-a" / "bin" / "remote-cli" / "code", "1.0.0", "commit-a"
@@ -207,11 +270,36 @@ def test_find_latest_code_ignores_launcher_missing_commit(
     manager.code_path = None
 
     monkeypatch.setattr(code_manager, "vscode_root", root)
+    monkeypatch.setattr(
+        code_manager, "detect_runtime_environment", lambda: "vscode-server"
+    )
+    monkeypatch.setattr(code_manager.shutil, "which", lambda _name: None)
 
     with caplog.at_level("WARNING"):
         asyncio.run(manager.find_latest_code(update_environment=False))
 
-    assert "No VSCode remote CLI executable found" in caplog.text
+    assert "No VSCode CLI executable found" in caplog.text
+
+
+def test_find_latest_code_falls_back_to_local_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.setattr(code_manager, "detect_runtime_environment", lambda: "local")
+    monkeypatch.setattr(
+        code_manager.shutil,
+        "which",
+        lambda name: "/tmp/code" if name == "code" else None,
+    )
+    monkeypatch.setenv("PATH", "")
+
+    asyncio.run(manager.find_latest_code(update_environment=True))
+
+    assert manager.code_path == Path("/tmp")
+    assert os.environ["PATH"].split(os.pathsep)[0] == "/tmp"
 
 
 @pytest.mark.parametrize(

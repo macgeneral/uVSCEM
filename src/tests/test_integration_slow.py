@@ -201,10 +201,50 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "pinned"])
 def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_proxy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    pinned: bool,
 ) -> None:
+    extension_id = "ms-vscode-remote.vscode-remote-extensionpack"
+
+    if pinned:
+        probe_manager = CodeExtensionManager(
+            config_name=str(ASSETS_DIR / "test_extensions.json"),
+            code_path=shutil.which("code") or "code",
+            target_directory=str(tmp_path / "probe-cache"),
+        )
+        metadata_map = asyncio.run(
+            probe_manager.api_manager.get_extension_metadata(extension_id)
+        )
+        versions = metadata_map.get(extension_id, [])
+        if not versions:
+            pytest.skip("Could not resolve extension metadata for pinned test")
+        resolved_version = str(versions[0].get("version", ""))
+        if not resolved_version:
+            pytest.skip("Could not resolve extension version for pinned test")
+        extension_spec = f"{extension_id}@{resolved_version}"
+    else:
+        resolved_version = ""
+        extension_spec = extension_id
+
+    config_path = tmp_path / (
+        "test_extensions_pinned.json" if pinned else "test_extensions_unpinned.json"
+    )
+    config_path.write_text(
+        json.dumps(
+            {
+                "customizations": {
+                    "vscode": {
+                        "extensions": [extension_spec],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
     bundle_path = tmp_path / "bundle"
     sandbox_vscode_root = tmp_path / "vscode-server"
     sandbox_extensions = sandbox_vscode_root / "extensions"
@@ -214,7 +254,7 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     monkeypatch.setattr(extension_manager_module, "vscode_root", sandbox_vscode_root)
 
     extension_manager_module.export_offline_bundle(
-        config_name=str(ASSETS_DIR / "test_extensions.json"),
+        config_name=str(config_path),
         bundle_path=str(bundle_path),
         target_path=str(tmp_path / "export-cache"),
         code_path=shutil.which("code") or "code",
@@ -232,6 +272,9 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     ordered_extensions = [
         str(extension_id) for extension_id in manifest.get("ordered_extensions", [])
     ]
+    extension_entries = {
+        str(entry.get("id", "")): entry for entry in manifest.get("extensions", [])
+    }
     installed_metadata = json.loads(
         (sandbox_extensions / "extensions.json").read_text(encoding="utf-8")
     )
@@ -240,8 +283,13 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
         for entry in installed_metadata
         if isinstance(entry, dict)
     }
-    for extension_id in ordered_extensions:
-        assert extension_id in installed_ids
+    for installed_extension_id in ordered_extensions:
+        assert installed_extension_id in installed_ids
+
+    if pinned:
+        assert str(extension_entries.get(extension_id, {}).get("version", "")) == (
+            resolved_version
+        )
 
 
 @pytest.mark.slow

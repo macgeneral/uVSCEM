@@ -11,6 +11,8 @@ from typing import Any
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from uvscem.vscode_paths import resolve_vscode_root
+
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
@@ -18,7 +20,7 @@ __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 max_retries = 3
 user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
 # VSCode extension installation directory
-vscode_root: Path = Path.home().joinpath(".vscode-server").absolute()
+vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
 
 
@@ -154,6 +156,7 @@ class CodeAPIManager(object):
         extension_id: str,
         include_latest_version_only: bool = False,
         include_latest_stable_version_only: bool = True,
+        requested_version: str = "",
     ) -> dict[str, list[dict[str, Any]]]:
         extensions = {}
         logger.info(f"Obtaining metadata for {extension_id}")
@@ -176,6 +179,8 @@ class CodeAPIManager(object):
 
             for extension_version_info in extensions_versions:
                 extension_version: str = str(extension_version_info.get("version", ""))
+                if requested_version and extension_version != requested_version:
+                    continue
                 extension_properties: dict = dict(
                     {
                         (item.get("key"), item.get("value"))
@@ -320,6 +325,7 @@ class CodeAPIManager(object):
         extension_id: str,
         include_latest_version_only: bool = False,
         include_latest_stable_version_only: bool = True,
+        requested_version: str = "",
     ) -> dict[str, list[dict[str, Any]]]:
         """Asynchronously fetch metadata for one extension."""
         return await asyncio.to_thread(
@@ -327,6 +333,7 @@ class CodeAPIManager(object):
             extension_id,
             include_latest_version_only,
             include_latest_stable_version_only,
+            requested_version,
         )
 
     def __init__(self):
