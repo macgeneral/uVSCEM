@@ -121,6 +121,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group publish
 
+      - name: Strip CI badges from README for PyPI
+        run: sed -i 's/ \[!\[.*//' README.md
+
       - name: Build distributions
         run: uv build
 
@@ -150,4 +153,5 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.release_notes.outputs.notes }}
+          generate_release_notes: true
           make_latest: true
