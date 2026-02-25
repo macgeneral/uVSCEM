@@ -131,7 +131,7 @@ class CodeExtensionManager(object):
         self.extensions = []
         self.installed = []
         self.target_path = (
-            Path(target_directory).absolute()
+            Path(os.path.expandvars(target_directory)).expanduser().absolute()
             if target_directory
             else Path.home().joinpath("cache/.vscode/extensions").absolute()
         )
@@ -533,7 +533,7 @@ class CodeExtensionManager(object):
 def install(
     config_name: str = "devcontainer.json",
     code_path: str = "code",
-    target_path: str = "$HOME/cache/.vscode/extensions",
+    target_path: str = "",
     log_level: str = "info",
 ) -> None:
     """Install all extensions listed in devcontainer.json."""
@@ -633,7 +633,7 @@ def _verify_bundle_manifest_signature(
 def export_offline_bundle(
     config_name: str = "devcontainer.json",
     bundle_path: str = "./uvscem-offline-bundle",
-    target_path: str = "$HOME/cache/.vscode/extensions",
+    target_path: str = "",
     code_path: str = "code",
     log_level: str = "info",
     vsce_sign_version: str = DEFAULT_VSCE_SIGN_VERSION,
@@ -660,7 +660,11 @@ def export_offline_bundle(
     try:
         bundle_dir = Path(bundle_path).expanduser().resolve()
         artifacts_dir = bundle_dir.joinpath("artifacts")
-        cache_dir = Path(os.path.expandvars(target_path)).expanduser().resolve()
+        cache_dir = (
+            Path.home().joinpath("cache/.vscode/extensions").resolve()
+            if not target_path
+            else Path(os.path.expandvars(target_path)).expanduser().resolve()
+        )
         vsce_sign_dir = bundle_dir.joinpath("vsce-sign")
         bundle_dir.mkdir(parents=True, exist_ok=True)
         artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -754,7 +758,7 @@ def export_offline_bundle(
 def import_offline_bundle(
     bundle_path: str,
     code_path: str = "code",
-    target_path: str = "$HOME/cache/.vscode/extensions",
+    target_path: str = "",
     log_level: str = "info",
     strict_offline: bool = False,
     verify_manifest_signature: bool = False,
@@ -929,7 +933,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config-name", default="devcontainer.json")
     parser.add_argument("--code-path", default="code")
-    parser.add_argument("--target-path", default="$HOME/cache/.vscode/extensions")
+    parser.add_argument("--target-path", default="")
     parser.add_argument("--bundle-path", default="./uvscem-offline-bundle")
     parser.add_argument("--vsce-sign-version", default=DEFAULT_VSCE_SIGN_VERSION)
     parser.add_argument("--vsce-sign-targets", default="current")
