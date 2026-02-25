@@ -39,5 +39,5 @@
   "runArgs": [
     "--add-host=localproxy:host-gateway"
   ],
-  "postAttachCommand": "pip install --upgrade uv && uv sync --group dev && uv run uvscem --config-name ${HOME}/devcontainer.json"
+  "postAttachCommand": "python -m pip install --upgrade uv && uv sync --group dev && uv run uvscem --config-name ${localWorkspaceFolder}/.devcontainer/devcontainer.json"
 }

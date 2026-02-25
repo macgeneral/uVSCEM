@@ -1136,6 +1136,8 @@ def test_cli_install_function_uses_expected_constructor_args(
     captured: dict[str, object] = {}
     code_path = tmp_path / "custom" / "code"
     target_path = tmp_path / "ignored" / "by-current-api"
+    config_file = tmp_path / "devcontainer.custom.json"
+    config_file.write_text("{}", encoding="utf-8")
 
     class _Manager:
         def __init__(
@@ -1154,14 +1156,14 @@ def test_cli_install_function_uses_expected_constructor_args(
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _Manager)
 
     extension_manager.install(
-        config_name="devcontainer.custom.json",
+        config_name=str(config_file),
         code_path=str(code_path),
         target_path=str(target_path),
         log_level="info",
     )
 
     assert captured == {
-        "config_name": "devcontainer.custom.json",
+        "config_name": str(config_file),
         "code_path": str(code_path),
         "target_directory": str(target_path),
         "initialized": True,
@@ -1170,8 +1172,12 @@ def test_cli_install_function_uses_expected_constructor_args(
 
 
 def test_cli_install_function_maps_errors_to_installation_workflow_error(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
+
     class _Manager:
         def __init__(
             self, config_name: str, code_path: str, target_directory: str = ""
@@ -1189,7 +1195,7 @@ def test_cli_install_function_maps_errors_to_installation_workflow_error(
     with pytest.raises(
         InstallationWorkflowError, match="Extension installation failed"
     ):
-        extension_manager.install()
+        extension_manager.install(config_name=str(config_file))
 
 
 def test_initialize_sets_extensions_and_installed(
@@ -1760,8 +1766,10 @@ def test_export_offline_bundle_writes_manifest_and_artifacts(
         lambda: "linux-x64",
     )
 
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
     extension_manager.export_offline_bundle(
-        config_name="devcontainer.json",
+        config_name=str(config_file),
         bundle_path=str(bundle_path),
         target_path=str(tmp_path / "cache"),
         code_path="code",
@@ -1847,7 +1855,10 @@ def test_export_offline_bundle_signs_manifest_when_key_is_provided(
     )
     monkeypatch.setattr(extension_manager, "_sign_bundle_manifest", _sign_manifest)
 
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
     extension_manager.export_offline_bundle(
+        config_name=str(config_file),
         bundle_path=str(bundle_path),
         manifest_signing_key="ABC123",
     )
@@ -1922,7 +1933,10 @@ def test_export_offline_bundle_supports_all_vsce_sign_targets(
         ("linux-x64", "win32-x64"),
     )
 
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
     extension_manager.export_offline_bundle(
+        config_name=str(config_file),
         bundle_path=str(bundle_path),
         vsce_sign_targets="all",
     )
@@ -1991,7 +2005,10 @@ def test_export_offline_bundle_supports_custom_target_list(
         _install_vsce_sign_binary_for_target,
     )
 
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
     extension_manager.export_offline_bundle(
+        config_name=str(config_file),
         bundle_path=str(bundle_path),
         vsce_sign_targets="linux-x64,win32-x64",
     )
@@ -2002,8 +2019,11 @@ def test_export_offline_bundle_supports_custom_target_list(
 def test_export_offline_bundle_rejects_empty_target_list(
     tmp_path: Path,
 ) -> None:
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
     with pytest.raises(OfflineBundleExportError, match="No valid vsce-sign targets"):
         extension_manager.export_offline_bundle(
+            config_name=str(config_file),
             bundle_path=str(tmp_path / "bundle"),
             vsce_sign_targets=" , ",
         )

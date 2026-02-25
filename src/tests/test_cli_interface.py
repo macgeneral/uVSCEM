@@ -111,11 +111,14 @@ def test_cli_help_shows_core_options(
 
 def test_cli_invokes_manager_with_expected_arguments(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     extension_manager = _import_extension_manager(monkeypatch)
     captured: dict[str, object] = {}
     code_path = str(Path(tempfile.gettempdir()) / "custom" / "code")
     target_path = str(Path(tempfile.gettempdir()) / "extensions")
+    config_file = tmp_path / "custom-devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
 
     def _factory(
         config_name: str, code_path: str, target_directory: str = ""
@@ -134,7 +137,7 @@ def test_cli_invokes_manager_with_expected_arguments(
         monkeypatch,
         [
             "--config-name",
-            "custom-devcontainer.json",
+            str(config_file),
             "--code-path",
             code_path,
             "--target-path",
@@ -148,7 +151,7 @@ def test_cli_invokes_manager_with_expected_arguments(
     assert code == 0
     manager = captured["manager"]
     assert isinstance(manager, _ManagerStub)
-    assert manager.config_name == "custom-devcontainer.json"
+    assert manager.config_name == str(config_file)
     assert manager.code_path == code_path
     assert manager.target_directory == target_path
     assert manager.initialized is True
@@ -164,3 +167,51 @@ def test_cli_reports_argument_errors(
 
     assert code != 0
     assert "error" in error_text
+
+
+def test_install_missing_config_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.ERROR):
+        code = _run_main(
+            monkeypatch,
+            ["install", "--config-name", "does-not-exist.json"],
+        )
+
+    assert code == 1
+    assert any("not found" in record.message.lower() for record in caplog.records)
+
+
+def test_export_missing_config_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.ERROR):
+        code = _run_main(
+            monkeypatch,
+            ["export", "--config-name", "does-not-exist.json"],
+        )
+
+    assert code == 1
+    assert any("not found" in record.message.lower() for record in caplog.records)
+
+
+def test_import_missing_bundle_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    import logging
+
+    missing_bundle = str(tmp_path / "no-such-bundle")
+    with caplog.at_level(logging.ERROR):
+        code = _run_main(
+            monkeypatch,
+            ["import", "--bundle-path", missing_bundle],
+        )
+
+    assert code == 1
+    assert any("not found" in record.message.lower() for record in caplog.records)

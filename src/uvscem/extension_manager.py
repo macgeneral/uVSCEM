@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from collections import defaultdict
@@ -35,6 +36,7 @@ from uvscem.exceptions import (
     OfflineBundleImportMissingFileError,
     OfflineBundleImportValidationError,
     OfflineModeError,
+    UvscemError,
 )
 from uvscem.install_engine import (
     run_code_cli_install,
@@ -541,6 +543,17 @@ def install(
     )
     logger.info("Attempting to install all necessary DevContainer extensions.")
 
+    config_path = Path(config_name)
+    resolved_config_path = (
+        config_path
+        if config_path.is_absolute()
+        else Path.cwd().joinpath(config_path).absolute()
+    )
+    if not resolved_config_path.is_file():
+        raise InstallationWorkflowError(
+            f"DevContainer configuration not found: {resolved_config_path}"
+        )
+
     async def _run() -> None:
         manager = CodeExtensionManager(
             config_name=config_name,
@@ -632,6 +645,17 @@ def export_offline_bundle(
         level=(getattr(logging, log_level.upper())),
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
+
+    config_path = Path(config_name)
+    resolved_config_path = (
+        config_path
+        if config_path.is_absolute()
+        else Path.cwd().joinpath(config_path).absolute()
+    )
+    if not resolved_config_path.is_file():
+        raise OfflineBundleExportError(
+            f"DevContainer configuration not found: {resolved_config_path}"
+        )
 
     try:
         bundle_dir = Path(bundle_path).expanduser().resolve()
@@ -923,38 +947,50 @@ def main() -> None:
     command = getattr(args, "command", "install")
 
     if command == "install":
-        install(
-            config_name=args.config_name,
-            code_path=args.code_path,
-            target_path=args.target_path,
-            log_level=args.log_level,
-        )
+        try:
+            install(
+                config_name=args.config_name,
+                code_path=args.code_path,
+                target_path=args.target_path,
+                log_level=args.log_level,
+            )
+        except InstallationWorkflowError as exc:
+            logger.error(exc)
+            sys.exit(1)
         return
 
     if command == "export":
-        export_offline_bundle(
-            config_name=args.config_name,
-            bundle_path=args.bundle_path,
-            target_path=args.target_path,
-            code_path=args.code_path,
-            log_level=args.log_level,
-            vsce_sign_version=args.vsce_sign_version,
-            vsce_sign_targets=getattr(args, "vsce_sign_targets", "current"),
-            manifest_signing_key=getattr(args, "manifest_signing_key", ""),
-        )
+        try:
+            export_offline_bundle(
+                config_name=args.config_name,
+                bundle_path=args.bundle_path,
+                target_path=args.target_path,
+                code_path=args.code_path,
+                log_level=args.log_level,
+                vsce_sign_version=args.vsce_sign_version,
+                vsce_sign_targets=getattr(args, "vsce_sign_targets", "current"),
+                manifest_signing_key=getattr(args, "manifest_signing_key", ""),
+            )
+        except UvscemError as exc:
+            logger.error(exc)
+            sys.exit(1)
         return
 
-    import_offline_bundle(
-        bundle_path=args.bundle_path,
-        code_path=args.code_path,
-        target_path=args.target_path,
-        log_level=args.log_level,
-        strict_offline=getattr(args, "strict_offline", False),
-        verify_manifest_signature=getattr(args, "verify_manifest_signature", False),
-        manifest_verification_keyring=getattr(
-            args, "manifest_verification_keyring", ""
-        ),
-    )
+    try:
+        import_offline_bundle(
+            bundle_path=args.bundle_path,
+            code_path=args.code_path,
+            target_path=args.target_path,
+            log_level=args.log_level,
+            strict_offline=getattr(args, "strict_offline", False),
+            verify_manifest_signature=getattr(args, "verify_manifest_signature", False),
+            manifest_verification_keyring=getattr(
+                args, "manifest_verification_keyring", ""
+            ),
+        )
+    except UvscemError as exc:
+        logger.error(exc)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
