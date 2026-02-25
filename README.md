@@ -1,6 +1,15 @@
 # uVSCEM
 
-![PyPI - Version](https://img.shields.io/pypi/v/uvscem) ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/uvscem) ![PyPI - Implementation](https://img.shields.io/pypi/implementation/uvscem) ![PyPI - License](https://img.shields.io/pypi/l/uvscem) [![Lint](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml) [![Test](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml) [![Publish](https://github.com/macgeneral/uVSCEM/actions/workflows/publish.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/publish.yml) [![codecov](https://codecov.io/gh/macgeneral/uVSCEM/branch/main/graph/badge.svg)](https://codecov.io/gh/macgeneral/uVSCEM)
+![PyPI - Version](https://img.shields.io/pypi/v/uvscem)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/uvscem)
+![PyPI - Implementation](https://img.shields.io/pypi/implementation/uvscem)
+![PyPI - License](https://img.shields.io/pypi/l/uvscem)
+[![Lint](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml)
+[![Test](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/macgeneral/uVSCEM/branch/main/graph/badge.svg)](https://codecov.io/gh/macgeneral/uVSCEM)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
 
 uVSCEM is a VS Code extension installer for restricted environments.
 
