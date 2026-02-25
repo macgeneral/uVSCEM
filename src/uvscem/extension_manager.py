@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
+import hashlib
 import json
 import logging
 import os
@@ -21,7 +23,14 @@ from dependency_algorithm import Dependencies
 
 from uvscem.api_client import CodeAPIManager
 from uvscem.code_manager import CodeManager
-from uvscem.vsce_sign_bootstrap import provision_vsce_sign_binary_for_run
+from uvscem.vsce_sign_bootstrap import (
+    DEFAULT_VSCE_SIGN_VERSION,
+    SUPPORTED_VSCE_SIGN_TARGETS,
+    get_vsce_sign_package_name,
+    get_vsce_sign_target,
+    install_vsce_sign_binary_for_target,
+    provision_vsce_sign_binary_for_run,
+)
 
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
@@ -464,6 +473,331 @@ def install(
     asyncio.run(_run())
 
 
+def _run_command(cmd: list[str]) -> None:
+    process = subprocess.run(
+        cmd,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(
+            process.returncode,
+            cmd,
+            process.stdout,
+            process.stderr,
+        )
+
+
+def _sign_bundle_manifest(manifest_path: Path, signing_key: str) -> Path:
+    signature_path = manifest_path.with_suffix(f"{manifest_path.suffix}.asc")
+    _run_command(
+        [
+            "gpg",
+            "--batch",
+            "--yes",
+            "--armor",
+            "--local-user",
+            signing_key,
+            "--output",
+            str(signature_path),
+            "--detach-sign",
+            str(manifest_path),
+        ]
+    )
+    return signature_path
+
+
+def _verify_bundle_manifest_signature(
+    manifest_path: Path,
+    signature_path: Path,
+    verification_keyring: str = "",
+) -> None:
+    cmd = ["gpg", "--batch"]
+    if verification_keyring:
+        cmd.extend(
+            [
+                "--no-default-keyring",
+                "--keyring",
+                verification_keyring,
+            ]
+        )
+    cmd.extend(["--verify", str(signature_path), str(manifest_path)])
+    _run_command(cmd)
+
+
+def export_offline_bundle(
+    config_name: str = "devcontainer.json",
+    bundle_path: str = "./uvscem-offline-bundle",
+    target_path: str = "$HOME/cache/.vscode/extensions",
+    code_path: str = "code",
+    log_level: str = "info",
+    vsce_sign_version: str = DEFAULT_VSCE_SIGN_VERSION,
+    vsce_sign_targets: str = "current",
+    manifest_signing_key: str = "",
+) -> None:
+    """Export extensions, signatures, and vsce-sign into an offline bundle."""
+    logging.basicConfig(
+        level=(getattr(logging, log_level.upper())),
+        format="%(relativeCreated)d [%(levelname)s] %(message)s",
+    )
+
+    bundle_dir = Path(bundle_path).expanduser().resolve()
+    artifacts_dir = bundle_dir.joinpath("artifacts")
+    vsce_sign_dir = bundle_dir.joinpath("vsce-sign")
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    vsce_sign_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_targets(value: str) -> list[str]:
+        if value == "current":
+            return [get_vsce_sign_target()]
+        if value == "all":
+            return list(SUPPORTED_VSCE_SIGN_TARGETS)
+        result = [item.strip() for item in value.split(",") if item.strip()]
+        if not result:
+            raise ValueError("No valid vsce-sign targets were provided")
+        return result
+
+    resolved_targets = _resolve_targets(vsce_sign_targets)
+
+    async def _run() -> tuple[list[str], dict[str, dict[str, Any]]]:
+        manager = CodeExtensionManager(
+            config_name=config_name,
+            code_path=code_path,
+            target_directory=str(artifacts_dir),
+        )
+        extensions = await manager.parse_all_extensions()
+        for extension_id in extensions:
+            await manager.download_extension(extension_id)
+            await manager.download_signature_archive(extension_id)
+        return extensions, manager.extension_metadata
+
+    extensions, extension_metadata = asyncio.run(_run())
+
+    def _sha256_file(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    vsce_sign_binaries: list[dict[str, str]] = []
+    for target in resolved_targets:
+        target_dir = vsce_sign_dir.joinpath(target)
+        binary_path = install_vsce_sign_binary_for_target(
+            target=target,
+            install_dir=target_dir,
+            version=vsce_sign_version,
+            force=True,
+        )
+        vsce_sign_binaries.append(
+            {
+                "target": target,
+                "package": get_vsce_sign_package_name(target),
+                "binary": str(binary_path.relative_to(bundle_dir)),
+                "sha256": _sha256_file(binary_path),
+            }
+        )
+
+    extension_entries: list[dict[str, Any]] = []
+    for extension_id in extensions:
+        metadata = extension_metadata.get(extension_id, {})
+        extension_entries.append(
+            {
+                "id": extension_id,
+                "version": str(metadata.get("version", "")),
+                "filename": f"{extension_id}-{metadata.get('version', '')}.vsix",
+                "signature_filename": f"{extension_id}-{metadata.get('version', '')}.sigzip",
+                "vsix_sha256": _sha256_file(
+                    artifacts_dir.joinpath(
+                        f"{extension_id}-{metadata.get('version', '')}.vsix"
+                    )
+                ),
+                "signature_sha256": _sha256_file(
+                    artifacts_dir.joinpath(
+                        f"{extension_id}-{metadata.get('version', '')}.sigzip"
+                    )
+                ),
+                "installation_metadata": metadata.get("installation_metadata", {}),
+                "dependencies": list(metadata.get("dependencies", [])),
+                "extension_pack": list(metadata.get("extension_pack", [])),
+            }
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "config_name": config_name,
+        "ordered_extensions": extensions,
+        "extensions": extension_entries,
+        "vsce_sign": {
+            "version": vsce_sign_version,
+            "binaries": vsce_sign_binaries,
+        },
+    }
+    manifest_path = bundle_dir.joinpath("manifest.json")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    if manifest_signing_key:
+        _sign_bundle_manifest(manifest_path, manifest_signing_key)
+
+
+def import_offline_bundle(
+    bundle_path: str,
+    code_path: str = "code",
+    target_path: str = "$HOME/cache/.vscode/extensions",
+    log_level: str = "info",
+    strict_offline: bool = False,
+    verify_manifest_signature: bool = False,
+    manifest_verification_keyring: str = "",
+) -> None:
+    """Install extensions from a previously exported offline bundle."""
+    logging.basicConfig(
+        level=(getattr(logging, log_level.upper())),
+        format="%(relativeCreated)d [%(levelname)s] %(message)s",
+    )
+
+    bundle_dir = Path(bundle_path).expanduser().resolve()
+    manifest_path = bundle_dir.joinpath("manifest.json")
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Offline bundle manifest not found: {manifest_path}")
+
+    if verify_manifest_signature:
+        signature_path = manifest_path.with_suffix(f"{manifest_path.suffix}.asc")
+        if not signature_path.is_file():
+            raise FileNotFoundError(
+                f"Offline bundle manifest signature not found: {signature_path}"
+            )
+        _verify_bundle_manifest_signature(
+            manifest_path=manifest_path,
+            signature_path=signature_path,
+            verification_keyring=manifest_verification_keyring,
+        )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if int(manifest.get("schema_version", 0)) != 1:
+        raise ValueError("Unsupported offline bundle schema version")
+
+    manager = CodeExtensionManager(
+        config_name=str(manifest_path),
+        code_path=code_path,
+        target_directory=target_path,
+    )
+
+    if strict_offline and hasattr(manager, "api_manager"):
+        session = getattr(manager.api_manager, "session", None)
+        if session is not None:
+
+            def _offline_request(*_args, **_kwargs):
+                raise RuntimeError("Network access is disabled in strict offline mode")
+
+            setattr(session, "request", _offline_request)
+
+    def _sha256_file(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    extensions_json = manager.extensions_json_path()
+    extensions_json.parent.mkdir(parents=True, exist_ok=True)
+    if not extensions_json.is_file():
+        extensions_json.write_text("[]", encoding="utf-8")
+
+    extension_entries = {
+        str(entry.get("id", "")): entry for entry in manifest.get("extensions", [])
+    }
+    ordered_extensions: list[str] = [
+        str(extension_id) for extension_id in manifest.get("ordered_extensions", [])
+    ]
+
+    artifacts_dir = bundle_dir.joinpath("artifacts")
+    for extension_id in ordered_extensions:
+        entry = extension_entries.get(extension_id)
+        if not entry:
+            raise ValueError(
+                f"Missing extension manifest entry for extension: {extension_id}"
+            )
+
+        filename = str(entry.get("filename", ""))
+        signature_filename = str(entry.get("signature_filename", ""))
+        source_vsix = artifacts_dir.joinpath(filename)
+        source_signature = artifacts_dir.joinpath(signature_filename)
+        if not source_vsix.is_file() or not source_signature.is_file():
+            raise FileNotFoundError(
+                f"Missing offline artifact(s) for {extension_id}: {filename}, {signature_filename}"
+            )
+
+        expected_vsix_sha256 = str(entry.get("vsix_sha256", ""))
+        if expected_vsix_sha256 and _sha256_file(source_vsix) != expected_vsix_sha256:
+            raise ValueError(f"VSIX checksum mismatch for {extension_id}")
+
+        expected_signature_sha256 = str(entry.get("signature_sha256", ""))
+        if (
+            expected_signature_sha256
+            and _sha256_file(source_signature) != expected_signature_sha256
+        ):
+            raise ValueError(f"Signature checksum mismatch for {extension_id}")
+
+        shutil.copy2(source_vsix, manager.target_path.joinpath(filename))
+        shutil.copy2(source_signature, manager.target_path.joinpath(signature_filename))
+
+        manager.extension_metadata[extension_id] = {
+            "version": str(entry.get("version", "")),
+            "url": "offline",
+            "signature": "offline",
+            "installation_metadata": entry.get("installation_metadata", {}),
+            "dependencies": list(entry.get("dependencies", [])),
+            "extension_pack": list(entry.get("extension_pack", [])),
+        }
+
+    vsce_sign_info = manifest.get("vsce_sign", {})
+    binaries = list(vsce_sign_info.get("binaries", []))
+
+    if binaries:
+        current_target = get_vsce_sign_target()
+        selected = None
+        for item in binaries:
+            if str(item.get("target", "")) == current_target:
+                selected = item
+                break
+        if selected is None and len(binaries) == 1:
+            selected = binaries[0]
+        if selected is None:
+            raise ValueError(
+                f"No bundled vsce-sign binary found for target {current_target}"
+            )
+
+        vsce_sign_binary_rel = str(selected.get("binary", ""))
+        vsce_sign_binary = bundle_dir.joinpath(vsce_sign_binary_rel)
+        expected_vsce_sign_sha256 = str(selected.get("sha256", ""))
+    else:
+        vsce_sign_binary_rel = str(vsce_sign_info.get("binary", ""))
+        vsce_sign_binary = bundle_dir.joinpath(vsce_sign_binary_rel)
+        expected_vsce_sign_sha256 = ""
+
+    if not vsce_sign_binary.is_file():
+        raise FileNotFoundError(
+            f"Bundled vsce-sign binary not found: {vsce_sign_binary}"
+        )
+    if (
+        expected_vsce_sign_sha256
+        and _sha256_file(vsce_sign_binary) != expected_vsce_sign_sha256
+    ):
+        raise ValueError("Bundled vsce-sign checksum mismatch")
+
+    async def _run() -> None:
+        manager.installed = await manager.find_installed()
+        manager.extensions = list(ordered_extensions)
+        await manager.exclude_installed()
+
+        manager.vsce_sign_binary = vsce_sign_binary
+        try:
+            while manager.extensions:
+                await manager.install_extension(manager.extensions.pop(0))
+                await asyncio.sleep(1)
+        finally:
+            manager.vsce_sign_binary = None
+
+    asyncio.run(_run())
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create CLI parser while keeping existing install option names."""
     parser = argparse.ArgumentParser(prog="uvscem")
@@ -471,11 +805,18 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="install",
-        choices=["install"],
+        choices=["install", "export", "import"],
     )
     parser.add_argument("--config-name", default="devcontainer.json")
     parser.add_argument("--code-path", default="code")
     parser.add_argument("--target-path", default="$HOME/cache/.vscode/extensions")
+    parser.add_argument("--bundle-path", default="./uvscem-offline-bundle")
+    parser.add_argument("--vsce-sign-version", default=DEFAULT_VSCE_SIGN_VERSION)
+    parser.add_argument("--vsce-sign-targets", default="current")
+    parser.add_argument("--manifest-signing-key", default="")
+    parser.add_argument("--strict-offline", action="store_true")
+    parser.add_argument("--verify-manifest-signature", action="store_true")
+    parser.add_argument("--manifest-verification-keyring", default="")
     parser.add_argument("--log-level", default="info")
     return parser
 
@@ -483,11 +824,40 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    install(
-        config_name=args.config_name,
+    command = getattr(args, "command", "install")
+
+    if command == "install":
+        install(
+            config_name=args.config_name,
+            code_path=args.code_path,
+            target_path=args.target_path,
+            log_level=args.log_level,
+        )
+        return
+
+    if command == "export":
+        export_offline_bundle(
+            config_name=args.config_name,
+            bundle_path=args.bundle_path,
+            target_path=args.target_path,
+            code_path=args.code_path,
+            log_level=args.log_level,
+            vsce_sign_version=args.vsce_sign_version,
+            vsce_sign_targets=getattr(args, "vsce_sign_targets", "current"),
+            manifest_signing_key=getattr(args, "manifest_signing_key", ""),
+        )
+        return
+
+    import_offline_bundle(
+        bundle_path=args.bundle_path,
         code_path=args.code_path,
         target_path=args.target_path,
         log_level=args.log_level,
+        strict_offline=getattr(args, "strict_offline", False),
+        verify_manifest_signature=getattr(args, "verify_manifest_signature", False),
+        manifest_verification_keyring=getattr(
+            args, "manifest_verification_keyring", ""
+        ),
     )
 
 

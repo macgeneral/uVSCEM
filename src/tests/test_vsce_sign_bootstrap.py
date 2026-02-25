@@ -165,6 +165,23 @@ def test_get_vsce_sign_package_name(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_get_vsce_sign_package_name_with_explicit_target() -> None:
+    assert (
+        vsce_sign_bootstrap.get_vsce_sign_package_name("win32-x64")
+        == "@vscode/vsce-sign-win32-x64"
+    )
+
+
+def test_binary_name_uses_current_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        vsce_sign_bootstrap,
+        "get_vsce_sign_target",
+        lambda: "win32-x64",
+    )
+
+    assert vsce_sign_bootstrap._binary_name() == "vsce-sign.exe"
+
+
 def test_verify_npm_integrity_success() -> None:
     blob = b"payload"
     vsce_sign_bootstrap._verify_npm_integrity(blob, _sha512_integrity(blob))
@@ -291,7 +308,7 @@ def test_install_existing_binary_with_matching_checksum_keeps_file(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-linux-x64",
+        lambda target=None: "@vscode/vsce-sign-linux-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 
@@ -337,7 +354,7 @@ def test_install_existing_binary_checksum_mismatch_reinstalls(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-linux-x64",
+        lambda target=None: "@vscode/vsce-sign-linux-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 
@@ -380,7 +397,7 @@ def test_install_vsce_sign_binary_installs_binary_and_sets_executable(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-linux-x64",
+        lambda target=None: "@vscode/vsce-sign-linux-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 
@@ -424,7 +441,7 @@ def test_install_vsce_sign_binary_missing_member_raises(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-linux-x64",
+        lambda target=None: "@vscode/vsce-sign-linux-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 
@@ -465,7 +482,7 @@ def test_install_vsce_sign_binary_windows_member_name(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-win32-x64",
+        lambda target=None: "@vscode/vsce-sign-win32-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Windows")
 
@@ -514,7 +531,7 @@ def test_install_vsce_sign_binary_extractfile_none_raises(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-linux-x64",
+        lambda target=None: "@vscode/vsce-sign-linux-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 
@@ -685,7 +702,7 @@ def test_install_vsce_sign_binary_unlinks_temp_file_on_replace_failure(
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "get_vsce_sign_package_name",
-        lambda: "@vscode/vsce-sign-linux-x64",
+        lambda target=None: "@vscode/vsce-sign-linux-x64",
     )
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 

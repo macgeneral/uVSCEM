@@ -22,6 +22,17 @@ import requests
 
 DEFAULT_VSCE_SIGN_VERSION = "2.0.6"
 PACKAGE_PREFIX = "@vscode/vsce-sign-"
+SUPPORTED_VSCE_SIGN_TARGETS = (
+    "linux-x64",
+    "linux-arm64",
+    "linux-arm",
+    "alpine-x64",
+    "alpine-arm64",
+    "darwin-x64",
+    "darwin-arm64",
+    "win32-x64",
+    "win32-arm64",
+)
 
 
 class VsceSignBootstrapError(RuntimeError):
@@ -79,9 +90,10 @@ def get_vsce_sign_target() -> str:
     raise VsceSignBootstrapError(f"Unsupported operating system: {system}")
 
 
-def get_vsce_sign_package_name() -> str:
+def get_vsce_sign_package_name(target: str | None = None) -> str:
     """Return the platform-specific npm package name for vsce-sign."""
-    return f"{PACKAGE_PREFIX}{get_vsce_sign_target()}"
+    resolved_target = target if target is not None else get_vsce_sign_target()
+    return f"{PACKAGE_PREFIX}{resolved_target}"
 
 
 def _verify_npm_integrity(tarball_bytes: bytes, integrity: str) -> None:
@@ -124,8 +136,12 @@ def _fetch_package_info(
     return tarball_url, integrity
 
 
+def _binary_name_for_target(target: str) -> str:
+    return "vsce-sign.exe" if target.startswith("win32-") else "vsce-sign"
+
+
 def _binary_name() -> str:
-    return "vsce-sign.exe" if platform.system().lower() == "windows" else "vsce-sign"
+    return _binary_name_for_target(get_vsce_sign_target())
 
 
 def _extract_binary_bytes_from_tarball(
@@ -171,9 +187,29 @@ def install_vsce_sign_binary(
     verify_existing_checksum: bool = True,
 ) -> Path:
     """Install platform-specific vsce-sign binary without requiring Node.js."""
-    package_name = get_vsce_sign_package_name()
+    target = get_vsce_sign_target()
+    return install_vsce_sign_binary_for_target(
+        target=target,
+        install_dir=install_dir,
+        version=version,
+        force=force,
+        session=session,
+        verify_existing_checksum=verify_existing_checksum,
+    )
+
+
+def install_vsce_sign_binary_for_target(
+    target: str,
+    install_dir: str | Path,
+    version: str = DEFAULT_VSCE_SIGN_VERSION,
+    force: bool = False,
+    session: Any | None = None,
+    verify_existing_checksum: bool = True,
+) -> Path:
+    """Install vsce-sign binary for a specific npm platform target."""
+    package_name = get_vsce_sign_package_name(target)
     install_path = Path(install_dir).expanduser().resolve()
-    binary_name = _binary_name()
+    binary_name = _binary_name_for_target(target)
     binary_path = install_path.joinpath(binary_name)
     session_client: Any = session if session is not None else requests.Session()
 

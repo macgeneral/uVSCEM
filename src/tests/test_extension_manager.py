@@ -1149,6 +1149,1491 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
     }
 
 
+def test_build_parser_accepts_export_and_import_commands() -> None:
+    parser = extension_manager.build_parser()
+
+    parsed_export = parser.parse_args(["export"])
+    parsed_import = parser.parse_args(["import"])
+
+    assert parsed_export.command == "export"
+    assert parsed_import.command == "import"
+
+
+def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        extension_manager,
+        "export_offline_bundle",
+        lambda config_name, bundle_path, target_path, code_path, log_level, vsce_sign_version, vsce_sign_targets, manifest_signing_key: (
+            called.update(
+                {
+                    "config_name": config_name,
+                    "bundle_path": bundle_path,
+                    "target_path": target_path,
+                    "code_path": code_path,
+                    "log_level": log_level,
+                    "vsce_sign_version": vsce_sign_version,
+                    "vsce_sign_targets": vsce_sign_targets,
+                    "manifest_signing_key": manifest_signing_key,
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        extension_manager.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(
+            command="export",
+            config_name="cfg.json",
+            bundle_path="/tmp/bundle",
+            target_path="/tmp/cache",
+            code_path="code-bin",
+            log_level="debug",
+            vsce_sign_version="2.0.6",
+            vsce_sign_targets="current",
+            manifest_signing_key="ABC123",
+        ),
+    )
+
+    extension_manager.main()
+
+    assert called == {
+        "config_name": "cfg.json",
+        "bundle_path": "/tmp/bundle",
+        "target_path": "/tmp/cache",
+        "code_path": "code-bin",
+        "log_level": "debug",
+        "vsce_sign_version": "2.0.6",
+        "vsce_sign_targets": "current",
+        "manifest_signing_key": "ABC123",
+    }
+
+
+def test_main_routes_import_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        extension_manager,
+        "import_offline_bundle",
+        lambda bundle_path, code_path, target_path, log_level, strict_offline, verify_manifest_signature, manifest_verification_keyring: (
+            called.update(
+                {
+                    "bundle_path": bundle_path,
+                    "code_path": code_path,
+                    "target_path": target_path,
+                    "log_level": log_level,
+                    "strict_offline": str(strict_offline),
+                    "verify_manifest_signature": str(verify_manifest_signature),
+                    "manifest_verification_keyring": manifest_verification_keyring,
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        extension_manager.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(
+            command="import",
+            config_name="cfg.json",
+            bundle_path="/tmp/bundle",
+            target_path="/tmp/cache",
+            code_path="code-bin",
+            log_level="debug",
+            vsce_sign_version="2.0.6",
+            strict_offline=True,
+            verify_manifest_signature=True,
+            manifest_verification_keyring="/tmp/keyring.gpg",
+        ),
+    )
+
+    extension_manager.main()
+
+    assert called == {
+        "bundle_path": "/tmp/bundle",
+        "code_path": "code-bin",
+        "target_path": "/tmp/cache",
+        "log_level": "debug",
+        "strict_offline": "True",
+        "verify_manifest_signature": "True",
+        "manifest_verification_keyring": "/tmp/keyring.gpg",
+    }
+
+
+def test_run_command_returns_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda cmd, capture_output, check, text: SimpleNamespace(
+            returncode=0,
+            stdout="ok",
+            stderr="",
+        ),
+    )
+
+    extension_manager._run_command(["echo", "ok"])
+
+
+def test_run_command_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda cmd, capture_output, check, text: SimpleNamespace(
+            returncode=2,
+            stdout="oops",
+            stderr="bad",
+        ),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        extension_manager._run_command(["false"])
+
+
+def test_sign_bundle_manifest_invokes_gpg_and_returns_signature_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    called: list[list[str]] = []
+
+    def _run_command(cmd: list[str]) -> None:
+        called.append(cmd)
+
+    monkeypatch.setattr(extension_manager, "_run_command", _run_command)
+
+    signature_path = extension_manager._sign_bundle_manifest(manifest_path, "ABC123")
+
+    assert signature_path == manifest_path.with_suffix(".json.asc")
+    assert called == [
+        [
+            "gpg",
+            "--batch",
+            "--yes",
+            "--armor",
+            "--local-user",
+            "ABC123",
+            "--output",
+            str(manifest_path.with_suffix(".json.asc")),
+            "--detach-sign",
+            str(manifest_path),
+        ]
+    ]
+
+
+def test_verify_bundle_manifest_signature_invokes_gpg_without_keyring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    signature_path = tmp_path / "manifest.json.asc"
+    called: list[list[str]] = []
+
+    def _run_command(cmd: list[str]) -> None:
+        called.append(cmd)
+
+    monkeypatch.setattr(extension_manager, "_run_command", _run_command)
+
+    extension_manager._verify_bundle_manifest_signature(manifest_path, signature_path)
+
+    assert called == [
+        [
+            "gpg",
+            "--batch",
+            "--verify",
+            str(signature_path),
+            str(manifest_path),
+        ]
+    ]
+
+
+def test_verify_bundle_manifest_signature_invokes_gpg_with_keyring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    signature_path = tmp_path / "manifest.json.asc"
+    called: list[list[str]] = []
+
+    def _run_command(cmd: list[str]) -> None:
+        called.append(cmd)
+
+    monkeypatch.setattr(extension_manager, "_run_command", _run_command)
+
+    extension_manager._verify_bundle_manifest_signature(
+        manifest_path,
+        signature_path,
+        verification_keyring="/tmp/keyring.gpg",
+    )
+
+    assert called == [
+        [
+            "gpg",
+            "--batch",
+            "--no-default-keyring",
+            "--keyring",
+            "/tmp/keyring.gpg",
+            "--verify",
+            str(signature_path),
+            str(manifest_path),
+        ]
+    ]
+
+
+def test_export_offline_bundle_writes_manifest_and_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+
+    class _ExportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            self.config_name = config_name
+            self.code_path = code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {
+                "publisher.demo": {
+                    "version": "1.2.3",
+                    "installation_metadata": {"identifier": {"id": "publisher.demo"}},
+                    "dependencies": ["publisher.dep"],
+                    "extension_pack": ["publisher.pack"],
+                }
+            }
+
+        async def parse_all_extensions(self) -> list[str]:
+            return ["publisher.demo"]
+
+        async def download_extension(self, extension_id: str) -> Path:
+            file_path = self.target_path / f"{extension_id}-1.2.3.vsix"
+            file_path.write_text("vsix")
+            return file_path
+
+        async def download_signature_archive(self, extension_id: str) -> Path:
+            file_path = self.target_path / f"{extension_id}-1.2.3.sigzip"
+            file_path.write_text("sig")
+            return file_path
+
+    def _install_vsce_sign_binary_for_target(
+        target: str,
+        install_dir: str | Path,
+        version: str,
+        force: bool = False,
+        session: Any | None = None,
+        verify_existing_checksum: bool = True,
+    ) -> Path:
+        del version, force, session, verify_existing_checksum
+        install_path = Path(install_dir)
+        install_path.mkdir(parents=True, exist_ok=True)
+        binary_name = "vsce-sign.exe" if target.startswith("win32-") else "vsce-sign"
+        binary_path = install_path / binary_name
+        binary_path.write_text("binary")
+        return binary_path
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
+    monkeypatch.setattr(
+        extension_manager,
+        "install_vsce_sign_binary_for_target",
+        _install_vsce_sign_binary_for_target,
+    )
+    monkeypatch.setattr(
+        extension_manager,
+        "get_vsce_sign_package_name",
+        lambda target=None: f"@vscode/vsce-sign-{target or 'linux-x64'}",
+    )
+    monkeypatch.setattr(
+        extension_manager,
+        "get_vsce_sign_target",
+        lambda: "linux-x64",
+    )
+
+    extension_manager.export_offline_bundle(
+        config_name="devcontainer.json",
+        bundle_path=str(bundle_path),
+        target_path=str(tmp_path / "cache"),
+        code_path="code",
+        log_level="info",
+        vsce_sign_version="2.0.6",
+        vsce_sign_targets="current",
+    )
+
+    manifest = json.loads((bundle_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    assert manifest["ordered_extensions"] == ["publisher.demo"]
+    assert manifest["extensions"][0]["filename"] == "publisher.demo-1.2.3.vsix"
+    assert manifest["vsce_sign"]["binaries"][0]["target"] == "linux-x64"
+    assert (bundle_path / "artifacts" / "publisher.demo-1.2.3.vsix").is_file()
+    assert (bundle_path / "artifacts" / "publisher.demo-1.2.3.sigzip").is_file()
+    assert (bundle_path / "vsce-sign" / "linux-x64" / "vsce-sign").is_file()
+
+
+def test_export_offline_bundle_signs_manifest_when_key_is_provided(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    signed: list[tuple[str, str]] = []
+
+    class _ExportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {
+                "publisher.demo": {
+                    "version": "1.2.3",
+                    "installation_metadata": {},
+                    "dependencies": [],
+                    "extension_pack": [],
+                }
+            }
+
+        async def parse_all_extensions(self) -> list[str]:
+            return ["publisher.demo"]
+
+        async def download_extension(self, extension_id: str) -> Path:
+            path = self.target_path / f"{extension_id}-1.2.3.vsix"
+            path.write_text("vsix")
+            return path
+
+        async def download_signature_archive(self, extension_id: str) -> Path:
+            path = self.target_path / f"{extension_id}-1.2.3.sigzip"
+            path.write_text("sig")
+            return path
+
+    def _install_vsce_sign_binary_for_target(
+        target: str,
+        install_dir: str | Path,
+        version: str,
+        force: bool = False,
+        session: Any | None = None,
+        verify_existing_checksum: bool = True,
+    ) -> Path:
+        del version, force, session, verify_existing_checksum
+        install_path = Path(install_dir)
+        install_path.mkdir(parents=True, exist_ok=True)
+        binary = install_path / (
+            "vsce-sign.exe" if target.startswith("win32-") else "vsce-sign"
+        )
+        binary.write_text(target)
+        return binary
+
+    def _sign_manifest(manifest_path: Path, signing_key: str) -> Path:
+        signature_path = manifest_path.with_suffix(f"{manifest_path.suffix}.asc")
+        signature_path.write_text("signed")
+        signed.append((str(manifest_path), signing_key))
+        return signature_path
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
+    monkeypatch.setattr(
+        extension_manager,
+        "install_vsce_sign_binary_for_target",
+        _install_vsce_sign_binary_for_target,
+    )
+    monkeypatch.setattr(extension_manager, "_sign_bundle_manifest", _sign_manifest)
+
+    extension_manager.export_offline_bundle(
+        bundle_path=str(bundle_path),
+        manifest_signing_key="ABC123",
+    )
+
+    assert signed == [(str(bundle_path / "manifest.json"), "ABC123")]
+    assert (bundle_path / "manifest.json.asc").is_file()
+
+
+def test_export_offline_bundle_supports_all_vsce_sign_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    seen_targets: list[str] = []
+
+    class _ExportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {
+                "publisher.demo": {
+                    "version": "1.2.3",
+                    "installation_metadata": {},
+                    "dependencies": [],
+                    "extension_pack": [],
+                }
+            }
+
+        async def parse_all_extensions(self) -> list[str]:
+            return ["publisher.demo"]
+
+        async def download_extension(self, extension_id: str) -> Path:
+            file_path = self.target_path / f"{extension_id}-1.2.3.vsix"
+            file_path.write_text("vsix")
+            return file_path
+
+        async def download_signature_archive(self, extension_id: str) -> Path:
+            file_path = self.target_path / f"{extension_id}-1.2.3.sigzip"
+            file_path.write_text("sig")
+            return file_path
+
+    def _install_vsce_sign_binary_for_target(
+        target: str,
+        install_dir: str | Path,
+        version: str,
+        force: bool = False,
+        session: Any | None = None,
+        verify_existing_checksum: bool = True,
+    ) -> Path:
+        del version, force, session, verify_existing_checksum
+        seen_targets.append(target)
+        install_path = Path(install_dir)
+        install_path.mkdir(parents=True, exist_ok=True)
+        binary = install_path / (
+            "vsce-sign.exe" if target.startswith("win32-") else "vsce-sign"
+        )
+        binary.write_text(target)
+        return binary
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
+    monkeypatch.setattr(
+        extension_manager,
+        "install_vsce_sign_binary_for_target",
+        _install_vsce_sign_binary_for_target,
+    )
+    monkeypatch.setattr(
+        extension_manager,
+        "SUPPORTED_VSCE_SIGN_TARGETS",
+        ("linux-x64", "win32-x64"),
+    )
+
+    extension_manager.export_offline_bundle(
+        bundle_path=str(bundle_path),
+        vsce_sign_targets="all",
+    )
+
+    assert seen_targets == ["linux-x64", "win32-x64"]
+
+
+def test_export_offline_bundle_supports_custom_target_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    seen_targets: list[str] = []
+
+    class _ExportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {
+                "publisher.demo": {
+                    "version": "1.2.3",
+                    "installation_metadata": {},
+                    "dependencies": [],
+                    "extension_pack": [],
+                }
+            }
+
+        async def parse_all_extensions(self) -> list[str]:
+            return ["publisher.demo"]
+
+        async def download_extension(self, extension_id: str) -> Path:
+            path = self.target_path / f"{extension_id}-1.2.3.vsix"
+            path.write_text("vsix")
+            return path
+
+        async def download_signature_archive(self, extension_id: str) -> Path:
+            path = self.target_path / f"{extension_id}-1.2.3.sigzip"
+            path.write_text("sig")
+            return path
+
+    def _install_vsce_sign_binary_for_target(
+        target: str,
+        install_dir: str | Path,
+        version: str,
+        force: bool = False,
+        session: Any | None = None,
+        verify_existing_checksum: bool = True,
+    ) -> Path:
+        del version, force, session, verify_existing_checksum
+        seen_targets.append(target)
+        install_path = Path(install_dir)
+        install_path.mkdir(parents=True, exist_ok=True)
+        binary = install_path / (
+            "vsce-sign.exe" if target.startswith("win32-") else "vsce-sign"
+        )
+        binary.write_text(target)
+        return binary
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
+    monkeypatch.setattr(
+        extension_manager,
+        "install_vsce_sign_binary_for_target",
+        _install_vsce_sign_binary_for_target,
+    )
+
+    extension_manager.export_offline_bundle(
+        bundle_path=str(bundle_path),
+        vsce_sign_targets="linux-x64,win32-x64",
+    )
+
+    assert seen_targets == ["linux-x64", "win32-x64"]
+
+
+def test_export_offline_bundle_rejects_empty_target_list(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="No valid vsce-sign targets"):
+        extension_manager.export_offline_bundle(
+            bundle_path=str(tmp_path / "bundle"),
+            vsce_sign_targets=" , ",
+        )
+
+
+def test_import_offline_bundle_installs_extensions_from_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    manifest = {
+        "schema_version": 1,
+        "ordered_extensions": ["publisher.demo"],
+        "extensions": [
+            {
+                "id": "publisher.demo",
+                "version": "1.2.3",
+                "filename": "publisher.demo-1.2.3.vsix",
+                "signature_filename": "publisher.demo-1.2.3.sigzip",
+                "installation_metadata": {"identifier": {"id": "publisher.demo"}},
+                "dependencies": [],
+                "extension_pack": [],
+            }
+        ],
+        "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+    }
+    (bundle_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    installed: list[str] = []
+    captured_manager: dict[str, Any] = {}
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+            captured_manager["manager"] = self
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_pack, retries
+            assert self.vsce_sign_binary is not None
+            installed.append(extension_id)
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    extension_manager.import_offline_bundle(
+        bundle_path=str(bundle_path),
+        code_path="code",
+        target_path=str(tmp_path / "cache"),
+        log_level="info",
+    )
+
+    assert installed == ["publisher.demo"]
+    manager = captured_manager["manager"]
+    assert "publisher.demo" in manager.extension_metadata
+    assert (manager.target_path / "publisher.demo-1.2.3.vsix").is_file()
+    assert (manager.target_path / "publisher.demo-1.2.3.sigzip").is_file()
+
+
+def test_import_offline_bundle_strict_offline_blocks_network_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {
+                    "binaries": [
+                        {
+                            "target": "linux-x64",
+                            "binary": "vsce-sign/vsce-sign",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+            self.api_manager = SimpleNamespace(
+                session=SimpleNamespace(request=lambda *_args, **_kwargs: None)
+            )
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            self.api_manager.session.request("GET", "https://example.com")
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(RuntimeError, match="strict offline mode"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+            strict_offline=True,
+        )
+
+
+def test_import_offline_bundle_strict_offline_handles_missing_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {
+                    "binaries": [
+                        {
+                            "target": "linux-x64",
+                            "binary": "vsce-sign/vsce-sign",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+            self.api_manager = SimpleNamespace(session=None)
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            return None
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    extension_manager.import_offline_bundle(
+        bundle_path=str(bundle_path),
+        target_path=str(tmp_path / "cache"),
+        strict_offline=True,
+    )
+
+
+def test_import_offline_bundle_raises_when_manifest_missing(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        extension_manager.import_offline_bundle(bundle_path=str(tmp_path / "missing"))
+
+
+def test_import_offline_bundle_raises_when_manifest_signature_missing(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    bundle_path.mkdir(parents=True)
+    (bundle_path / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "ordered_extensions": [], "extensions": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="manifest signature"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            verify_manifest_signature=True,
+        )
+
+
+def test_import_offline_bundle_verifies_manifest_signature_with_keyring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {
+                    "binaries": [
+                        {
+                            "target": "linux-x64",
+                            "binary": "vsce-sign/vsce-sign",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle_path / "manifest.json.asc").write_text("signature", encoding="utf-8")
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            return None
+
+    verified: list[tuple[str, str, str]] = []
+
+    def _verify_manifest(
+        manifest_path: Path,
+        signature_path: Path,
+        verification_keyring: str = "",
+    ) -> None:
+        verified.append((str(manifest_path), str(signature_path), verification_keyring))
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(
+        extension_manager,
+        "_verify_bundle_manifest_signature",
+        _verify_manifest,
+    )
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    extension_manager.import_offline_bundle(
+        bundle_path=str(bundle_path),
+        target_path=str(tmp_path / "cache"),
+        verify_manifest_signature=True,
+        manifest_verification_keyring="/tmp/keyring.gpg",
+    )
+
+    assert verified == [
+        (
+            str(bundle_path / "manifest.json"),
+            str(bundle_path / "manifest.json.asc"),
+            "/tmp/keyring.gpg",
+        )
+    ]
+
+
+def test_import_offline_bundle_raises_for_unsupported_schema(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    bundle_path.mkdir(parents=True)
+    (bundle_path / "manifest.json").write_text(
+        json.dumps({"schema_version": 2}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported offline bundle schema version"):
+        extension_manager.import_offline_bundle(bundle_path=str(bundle_path))
+
+
+def test_import_offline_bundle_raises_when_extension_entry_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+
+    with pytest.raises(ValueError, match="Missing extension manifest entry"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_raises_when_artifacts_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    (bundle_path / "artifacts").mkdir(parents=True)
+    (bundle_path / "vsce-sign").mkdir(parents=True)
+    (bundle_path / "vsce-sign" / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+
+    with pytest.raises(FileNotFoundError, match="Missing offline artifact"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_raises_when_artifact_checksum_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                        "vsix_sha256": "deadbeef",
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+
+    with pytest.raises(ValueError, match="VSIX checksum mismatch"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_raises_when_signature_checksum_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                        "signature_sha256": "badcafe",
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+
+    with pytest.raises(ValueError, match="Signature checksum mismatch"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_raises_when_no_matching_vsce_sign_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    (bundle_path / "vsce-sign" / "darwin-x64").mkdir(parents=True)
+    (bundle_path / "vsce-sign" / "win32-x64").mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (bundle_path / "vsce-sign" / "darwin-x64" / "vsce-sign").write_text("binary")
+    (bundle_path / "vsce-sign" / "win32-x64" / "vsce-sign.exe").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {
+                    "binaries": [
+                        {
+                            "target": "darwin-x64",
+                            "binary": "vsce-sign/darwin-x64/vsce-sign",
+                        },
+                        {
+                            "target": "win32-x64",
+                            "binary": "vsce-sign/win32-x64/vsce-sign.exe",
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+
+    with pytest.raises(ValueError, match="No bundled vsce-sign binary found"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_accepts_single_nonmatching_vsce_sign_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    (bundle_path / "vsce-sign" / "darwin-x64").mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (bundle_path / "vsce-sign" / "darwin-x64" / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {
+                    "binaries": [
+                        {
+                            "target": "darwin-x64",
+                            "binary": "vsce-sign/darwin-x64/vsce-sign",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            return None
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    extension_manager.import_offline_bundle(
+        bundle_path=str(bundle_path),
+        target_path=str(tmp_path / "cache"),
+    )
+
+
+def test_import_offline_bundle_raises_when_vsce_sign_checksum_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    (bundle_path / "vsce-sign" / "linux-x64").mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (bundle_path / "vsce-sign" / "linux-x64" / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {
+                    "binaries": [
+                        {
+                            "target": "linux-x64",
+                            "binary": "vsce-sign/linux-x64/vsce-sign",
+                            "sha256": "bad",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+
+    with pytest.raises(ValueError, match="vsce-sign checksum mismatch"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_raises_when_vsce_sign_binary_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata = {}
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+
+    with pytest.raises(FileNotFoundError, match="Bundled vsce-sign binary not found"):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_keeps_existing_extensions_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                        "installation_metadata": {
+                            "identifier": {"id": "publisher.demo"}
+                        },
+                        "dependencies": [],
+                        "extension_pack": [],
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            return None
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    existing_json = tmp_path / "vscode-root" / "extensions" / "extensions.json"
+    existing_json.parent.mkdir(parents=True, exist_ok=True)
+    existing_json.write_text('[{"identifier": {"id": "existing"}}]', encoding="utf-8")
+
+    extension_manager.import_offline_bundle(
+        bundle_path=str(bundle_path),
+        code_path="code",
+        target_path=str(tmp_path / "cache"),
+        log_level="info",
+    )
+
+    assert (
+        existing_json.read_text(encoding="utf-8")
+        == '[{"identifier": {"id": "existing"}}]'
+    )
+
+
 def test_module_main_guard_executes_main(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["uvscem", "--help"])
     monkeypatch.delitem(sys.modules, "uvscem.extension_manager", raising=False)

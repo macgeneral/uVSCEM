@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,18 @@ def _isolated_code_binary(real_code_binary: str, tmp_path: Path) -> str:
     )
     wrapper.chmod(0o755)
     return str(wrapper)
+
+
+@contextmanager
+def _misconfigured_proxy(monkeypatch: pytest.MonkeyPatch):
+    proxy_url = "http://127.0.0.1:9"
+    monkeypatch.setenv("HTTP_PROXY", proxy_url)
+    monkeypatch.setenv("HTTPS_PROXY", proxy_url)
+    monkeypatch.setenv("http_proxy", proxy_url)
+    monkeypatch.setenv("https_proxy", proxy_url)
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+    yield
 
 
 @pytest.mark.slow
@@ -185,3 +198,108 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
                 )
         finally:
             manager.vsce_sign_binary = None
+
+
+@pytest.mark.slow
+def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    sandbox_vscode_root = tmp_path / "vscode-server"
+    sandbox_extensions = sandbox_vscode_root / "extensions"
+    sandbox_extensions.mkdir(parents=True, exist_ok=True)
+    (sandbox_extensions / "extensions.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(extension_manager_module, "vscode_root", sandbox_vscode_root)
+
+    extension_manager_module.export_offline_bundle(
+        config_name=str(ASSETS_DIR / "test_extensions.json"),
+        bundle_path=str(bundle_path),
+        target_path=str(tmp_path / "export-cache"),
+        code_path=shutil.which("code") or "code",
+    )
+
+    with _misconfigured_proxy(monkeypatch):
+        extension_manager_module.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "import-cache"),
+            code_path=shutil.which("code") or "code",
+            strict_offline=True,
+        )
+
+    manifest = json.loads((bundle_path / "manifest.json").read_text(encoding="utf-8"))
+    ordered_extensions = [
+        str(extension_id) for extension_id in manifest.get("ordered_extensions", [])
+    ]
+    installed_metadata = json.loads(
+        (sandbox_extensions / "extensions.json").read_text(encoding="utf-8")
+    )
+    installed_ids = {
+        str(entry.get("identifier", {}).get("id", ""))
+        for entry in installed_metadata
+        if isinstance(entry, dict)
+    }
+    for extension_id in ordered_extensions:
+        assert extension_id in installed_ids
+
+
+@pytest.mark.slow
+def test_integration_offline_bundle_import_local_vscode_install_with_misconfigured_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        pytest.skip("Local VS Code CLI install validation is skipped on CI")
+
+    code_binary = shutil.which("code")
+    if not code_binary:
+        pytest.skip("VS Code CLI not available")
+
+    extension_id = "dbaeumer.vscode-eslint"
+    config_path = tmp_path / "single-extension.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "customizations": {
+                    "vscode": {
+                        "extensions": [extension_id],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bundle_path = tmp_path / "bundle-local"
+    extension_manager_module.export_offline_bundle(
+        config_name=str(config_path),
+        bundle_path=str(bundle_path),
+        target_path=str(tmp_path / "export-cache-local"),
+        code_path=code_binary,
+    )
+
+    sandbox_vscode_root = tmp_path / "vscode-server-local"
+    sandbox_extensions = sandbox_vscode_root / "extensions"
+    sandbox_extensions.mkdir(parents=True, exist_ok=True)
+    (sandbox_extensions / "extensions.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(extension_manager_module, "vscode_root", sandbox_vscode_root)
+
+    isolated_code_binary = _isolated_code_binary(
+        code_binary, tmp_path / "isolated-code"
+    )
+
+    with _misconfigured_proxy(monkeypatch):
+        extension_manager_module.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "import-cache-local"),
+            code_path=isolated_code_binary,
+            strict_offline=True,
+        )
+
+    installed = _installed_extensions(isolated_code_binary)
+    assert extension_id in installed
+
+    _uninstall_extension(isolated_code_binary, extension_id)
+    installed_after_cleanup = _installed_extensions(isolated_code_binary)
+    assert extension_id not in installed_after_cleanup
