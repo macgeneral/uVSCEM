@@ -10,7 +10,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -126,7 +126,9 @@ def test_parse_all_extensions_collects_metadata_and_dependencies(
     async def _metadata(extension_id: str):
         return {extension_id: metadata_map[extension_id]}
 
-    bare_manager.api_manager = SimpleNamespace(get_extension_metadata=_metadata)
+    bare_manager.api_manager = cast(
+        Any, SimpleNamespace(get_extension_metadata=_metadata)
+    )
 
     class _Dependencies:
         def __init__(self, deps):
@@ -196,8 +198,11 @@ def test_download_extension_writes_and_moves_file(
             yield b""
             yield b"def"
 
-    bare_manager.api_manager = SimpleNamespace(
-        session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+        ),
     )
 
     downloaded = asyncio.run(bare_manager.download_extension("pub.ext"))
@@ -232,8 +237,11 @@ def test_download_signature_archive_writes_and_moves_file(
             yield b""
             yield b"zip"
 
-    bare_manager.api_manager = SimpleNamespace(
-        session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+        ),
     )
 
     downloaded = asyncio.run(bare_manager.download_signature_archive("pub.ext"))
@@ -604,10 +612,13 @@ def test_install_extension_runs_subprocess_and_retries_once(
     async def _find_socket(update_environment: bool = False) -> None:
         socket_calls.append(update_environment)
 
-    bare_manager.socket_manager = SimpleNamespace(
-        find_socket=lambda update_environment=False: _find_socket_collector(
-            socket_calls, update_environment
-        )
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(
+            find_socket=lambda update_environment=False: _find_socket_collector(
+                socket_calls, update_environment
+            )
+        ),
     )
 
     attempts = {"count": 0}
@@ -734,10 +745,13 @@ def test_install_extension_treats_error_text_as_failure_and_stops_at_max_retries
     file_path.write_text("payload")
 
     socket_calls: list[bool] = []
-    bare_manager.socket_manager = SimpleNamespace(
-        find_socket=lambda update_environment=False: _find_socket_collector(
-            socket_calls, update_environment
-        )
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(
+            find_socket=lambda update_environment=False: _find_socket_collector(
+                socket_calls, update_environment
+            )
+        ),
     )
 
     monkeypatch.setattr(
@@ -764,10 +778,13 @@ def test_install_extension_treats_stderr_error_as_failure(
     file_path.write_text("payload")
 
     socket_calls: list[bool] = []
-    bare_manager.socket_manager = SimpleNamespace(
-        find_socket=lambda update_environment=False: _find_socket_collector(
-            socket_calls, update_environment
-        )
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(
+            find_socket=lambda update_environment=False: _find_socket_collector(
+                socket_calls, update_environment
+            )
+        ),
     )
 
     monkeypatch.setattr(
@@ -884,7 +901,7 @@ def test_initialize_sets_extensions_and_installed(
     async def _find() -> list[dict[str, Any]]:
         return [{"identifier": {"id": "one"}}]
 
-    bare_manager.socket_manager = SimpleNamespace(initialize=_initialize)
+    bare_manager.socket_manager = cast(Any, SimpleNamespace(initialize=_initialize))
     monkeypatch.setattr(bare_manager, "parse_all_extensions", _parse)
     monkeypatch.setattr(bare_manager, "find_installed", _find)
 
@@ -903,7 +920,7 @@ def test_install_async_iterates_and_sleeps(
     async def _exclude() -> None:
         called.append("exclude")
 
-    bare_manager.exclude_installed = _exclude
+    monkeypatch.setattr(bare_manager, "exclude_installed", _exclude)
 
     async def _install_extension(
         extension_id: str, extension_pack: bool = False, retries: int = 0
@@ -1013,10 +1030,13 @@ def test_install_extension_retries_once_on_subprocess_error_async(
             raise subprocess.CalledProcessError(1, ["code"], "", "")
         return SimpleNamespace(stdout="ok", stderr="")
 
-    bare_manager.socket_manager = SimpleNamespace(
-        find_socket=lambda update_environment=False: _find_socket_collector(
-            socket_calls, update_environment
-        )
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(
+            find_socket=lambda update_environment=False: _find_socket_collector(
+                socket_calls, update_environment
+            )
+        ),
     )
     monkeypatch.setattr(extension_manager.subprocess, "run", _run)
 
@@ -1036,10 +1056,13 @@ def test_install_extension_treats_error_text_as_failure_async(
     (bare_manager.target_path / "pub.ext-1.0.0.vsix").write_text("payload")
 
     socket_calls: list[bool] = []
-    bare_manager.socket_manager = SimpleNamespace(
-        find_socket=lambda update_environment=False: _find_socket_collector(
-            socket_calls, update_environment
-        )
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(
+            find_socket=lambda update_environment=False: _find_socket_collector(
+                socket_calls, update_environment
+            )
+        ),
     )
 
     monkeypatch.setattr(

@@ -27,8 +27,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Ruff
-        run: uv run ruff check src
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
 
       - name: Ty
         run: uv run ty check

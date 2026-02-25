@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Iterator
+from typing import Any, Iterator
 from urllib.parse import quote
 
 import requests
@@ -101,7 +101,7 @@ def _verify_npm_integrity(tarball_bytes: bytes, integrity: str) -> None:
 def _fetch_package_info(
     package_name: str,
     version: str,
-    session: requests.Session,
+    session: Any,
 ) -> tuple[str, str]:
     encoded_name = quote(package_name, safe="")
     response = session.get(f"https://registry.npmjs.org/{encoded_name}", timeout=30)
@@ -152,7 +152,7 @@ def _expected_binary_sha512(
     package_name: str,
     version: str,
     binary_name: str,
-    session: requests.Session,
+    session: Any,
 ) -> str:
     tarball_url, integrity = _fetch_package_info(package_name, version, session)
     tarball_response = session.get(tarball_url, timeout=60)
@@ -167,7 +167,7 @@ def install_vsce_sign_binary(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: requests.Session | None = None,
+    session: Any | None = None,
     verify_existing_checksum: bool = True,
 ) -> Path:
     """Install platform-specific vsce-sign binary without requiring Node.js."""
@@ -175,7 +175,7 @@ def install_vsce_sign_binary(
     install_path = Path(install_dir).expanduser().resolve()
     binary_name = _binary_name()
     binary_path = install_path.joinpath(binary_name)
-    session = session if session is not None else requests.Session()
+    session_client: Any = session if session is not None else requests.Session()
 
     if binary_path.is_file() and not force:
         if not verify_existing_checksum:
@@ -184,7 +184,7 @@ def install_vsce_sign_binary(
             package_name=package_name,
             version=version,
             binary_name=binary_name,
-            session=session,
+            session=session_client,
         )
         actual_digest = hashlib.sha512(binary_path.read_bytes()).hexdigest()
         if actual_digest == expected_digest:
@@ -192,8 +192,8 @@ def install_vsce_sign_binary(
         force = True
 
     install_path.mkdir(parents=True, exist_ok=True)
-    tarball_url, integrity = _fetch_package_info(package_name, version, session)
-    tarball_response = session.get(tarball_url, timeout=60)
+    tarball_url, integrity = _fetch_package_info(package_name, version, session_client)
+    tarball_response = session_client.get(tarball_url, timeout=60)
     tarball_response.raise_for_status()
     tarball_bytes = tarball_response.content
     _verify_npm_integrity(tarball_bytes, integrity)
@@ -224,7 +224,7 @@ def install_vsce_sign_binary_with_fallback(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: requests.Session | None = None,
+    session: Any | None = None,
     temp_root: str | Path | None = None,
     verify_existing_checksum: bool = True,
 ) -> VsceSignRunInstallation:
@@ -262,7 +262,7 @@ def provision_vsce_sign_binary_for_run(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: requests.Session | None = None,
+    session: Any | None = None,
     temp_root: str | Path | None = None,
     verify_existing_checksum: bool = True,
 ) -> Iterator[Path]:

@@ -1,6 +1,6 @@
 # uVSCEM: unofficial VSCode Extension Manager
 ---
-![PyPI - Version](https://img.shields.io/pypi/v/uvscem) ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/uvscem) ![PyPI - Implementation](https://img.shields.io/pypi/implementation/uvscem) ![PyPI - License](https://img.shields.io/pypi/l/uvscem) 
+![PyPI - Version](https://img.shields.io/pypi/v/uvscem) ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/uvscem) ![PyPI - Implementation](https://img.shields.io/pypi/implementation/uvscem) ![PyPI - License](https://img.shields.io/pypi/l/uvscem) [![Lint](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml) [![Test](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml) [![Publish](https://github.com/macgeneral/uVSCEM/actions/workflows/publish.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/publish.yml)
 
 This little program is designed to address some limitations in air-gapped and proxy environments that currently occur due to partially missing proxy support in Visual Studio Code.  
 It allows for the installation of extensions in DevContainers, even when a proxy is involved, by downloading and installing them manually via Python's [`requests`](https://requests.readthedocs.io/en/latest/) library.
@@ -56,7 +56,7 @@ Workflows install `uv` via `astral-sh/setup-uv` pinned to an immutable commit SH
 
 Configure the following repository settings for `publish.yml`:
 
-- Secret: `PYPI_TAG_SIGNING_PUBLIC_KEY` (ASCII-armored public key used to verify release tags).
+- Variable: `PYPI_TAG_SIGNER_GITHUB_LOGIN` (GitHub username used to fetch public GPG keys via GitHub API).
 - Variable (optional): `PYPI_TAG_SIGNER` (expected signer identity substring from `git tag -v` output).
 
 ### Dependency update automation

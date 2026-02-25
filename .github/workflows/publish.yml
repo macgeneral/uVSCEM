@@ -20,20 +20,46 @@ jobs:
 
       - name: Validate semantic version tag
         run: |
-          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match vX.Y.Z"
+          SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if ! [[ "${GITHUB_REF_NAME}" =~ ${SEMVER_REGEX} ]]; then
+            echo "Tag ${GITHUB_REF_NAME} is not a valid version tag (expected v<major>.<minor>.<patch> with only numeric parts)"
             exit 1
           fi
 
-      - name: Import tag signing key
+      - name: Import tag signing key from GitHub API
         env:
-          PYPI_TAG_SIGNING_PUBLIC_KEY: ${{ secrets.PYPI_TAG_SIGNING_PUBLIC_KEY }}
+          EXPECTED_SIGNER_GITHUB_LOGIN: ${{ vars.PYPI_TAG_SIGNER_GITHUB_LOGIN }}
         run: |
-          if [[ -z "${PYPI_TAG_SIGNING_PUBLIC_KEY}" ]]; then
-            echo "Missing required secret: PYPI_TAG_SIGNING_PUBLIC_KEY"
+          if [[ -z "${EXPECTED_SIGNER_GITHUB_LOGIN}" ]]; then
+            echo "Missing required variable: PYPI_TAG_SIGNER_GITHUB_LOGIN"
             exit 1
           fi
-          echo "${PYPI_TAG_SIGNING_PUBLIC_KEY}" | gpg --batch --import
+
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          login = os.environ["EXPECTED_SIGNER_GITHUB_LOGIN"]
+          req = urllib.request.Request(
+              f"https://api.github.com/users/{login}/gpg_keys",
+              headers={"Accept": "application/vnd.github+json", "User-Agent": "uvscem-publish"},
+          )
+
+          with urllib.request.urlopen(req) as resp:
+              payload = json.load(resp)
+
+          keys = [item.get("armored_public_key", "") for item in payload]
+          keys = [key for key in keys if key]
+          if not keys:
+              raise SystemExit(f"No public GPG keys found for GitHub user: {login}")
+
+          with open("/tmp/tag-signer-keys.asc", "w", encoding="utf-8") as output:
+              output.write("\n".join(keys))
+              output.write("\n")
+          PY
+
+          gpg --batch --import /tmp/tag-signer-keys.asc
 
       - name: Verify tag signature
         env:

@@ -55,8 +55,17 @@ Run from repo root:
 
 1. `uv sync --group dev`
 2. `uv run ruff check .`
-3. `uv run ty check`
-4. `uv run pytest src`
+3. `uv run ruff format .`
+4. `uv run ty check`
+5. `uv run pytest src`
+
+Quality gate policy:
+
+- Always run the full quality gate after changes (unless the user explicitly asks not to):
+	1. `uv run ruff check .`
+	2. `uv run ruff format .`
+	3. `uv run ty check`
+	4. `uv run pytest src`
 
 ## Change strategy
 

@@ -93,7 +93,7 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
         pytest.skip("Could not resolve extension metadata for slow integration test")
 
     vsix_path = asyncio.run(manager.download_extension(extension_id))
-    sig_path = asyncio.run(manager.download_signature_archive(extension_id))
+    asyncio.run(manager.download_signature_archive(extension_id))
 
     payload = bytearray(vsix_path.read_bytes())
     if not payload:
