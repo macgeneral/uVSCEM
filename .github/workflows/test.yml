@@ -37,4 +37,4 @@ jobs:
         run: uv run pytest src
 
       - name: Integration tests
-        run: uv run pytest src/tests/test_integration_slow.py --slow --only-slow --no-cov
+        run: uv run pytest src --slow --no-cov

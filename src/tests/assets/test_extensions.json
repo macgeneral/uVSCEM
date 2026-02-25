@@ -2,9 +2,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-python.python",
-        "esbenp.prettier-vscode",
-        "dbaeumer.vscode-eslint"
+        "ms-vscode-remote.vscode-remote-extensionpack"
       ]
     }
   }

@@ -37,7 +37,7 @@ class CodeManager(object):
         socket_dir: Path = Path(
             os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())
         )
-        sockets: list = list(socket_dir.glob("vscode-ipc-*.sock"))
+        sockets: list[Path] = sorted(socket_dir.glob("vscode-ipc-*.sock"))
         no_socket: bool = True
 
         for s in sockets:
