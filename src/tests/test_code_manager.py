@@ -33,6 +33,7 @@ def test_find_socket_removes_stale_and_sets_environment(
 
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(code_manager.os, "name", "posix")
     monkeypatch.setattr(
         CodeManager,
         "is_socket_closed",
@@ -298,8 +299,9 @@ def test_find_latest_code_falls_back_to_local_cli(
 
     asyncio.run(manager.find_latest_code(update_environment=True))
 
-    assert manager.code_path == Path("/tmp")
-    assert os.environ["PATH"].split(os.pathsep)[0] == "/tmp"
+    expected_path = Path("/tmp").resolve()
+    assert manager.code_path == expected_path
+    assert Path(os.environ["PATH"].split(os.pathsep)[0]).resolve() == expected_path
 
 
 @pytest.mark.parametrize(

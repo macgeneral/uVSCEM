@@ -57,8 +57,17 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Unit tests
+        if: github.event_name != 'workflow_dispatch'
         run: uv run pytest src
 
+      - name: Unit tests (full failure report)
+        if: github.event_name == 'workflow_dispatch'
+        run: uv run pytest src --maxfail=0
+
       - name: Integration tests
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
         run: uv run pytest src --slow --no-cov
+
+      - name: Integration tests (full failure report)
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
+        run: uv run pytest src --slow --no-cov --maxfail=0
