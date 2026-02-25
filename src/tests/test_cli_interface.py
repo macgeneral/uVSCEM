@@ -114,6 +114,7 @@ def test_cli_invokes_manager_with_expected_arguments(
 ) -> None:
     extension_manager = _import_extension_manager(monkeypatch)
     captured: dict[str, object] = {}
+    code_path = str(Path(tempfile.gettempdir()) / "custom" / "code")
     target_path = str(Path(tempfile.gettempdir()) / "extensions")
 
     def _factory(
@@ -135,7 +136,7 @@ def test_cli_invokes_manager_with_expected_arguments(
             "--config-name",
             "custom-devcontainer.json",
             "--code-path",
-            "/custom/code",
+            code_path,
             "--target-path",
             target_path,
             "--log-level",
@@ -148,7 +149,7 @@ def test_cli_invokes_manager_with_expected_arguments(
     manager = captured["manager"]
     assert isinstance(manager, _ManagerStub)
     assert manager.config_name == "custom-devcontainer.json"
-    assert manager.code_path == "/custom/code"
+    assert manager.code_path == code_path
     assert manager.target_directory == target_path
     assert manager.initialized is True
     assert manager.install_called is True

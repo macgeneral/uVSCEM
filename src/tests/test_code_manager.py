@@ -34,7 +34,7 @@ def test_find_socket_removes_stale_and_sets_environment(
 
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(code_manager.os, "name", "posix")
+    monkeypatch.setattr(code_manager.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         CodeManager,
         "is_socket_closed",
@@ -109,7 +109,7 @@ def test_find_socket_windows_without_hook_returns_early(
 
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(code_manager.os, "name", "nt", raising=False)
+    monkeypatch.setattr(code_manager.platform, "system", lambda: "Windows")
 
     asyncio.run(manager.find_socket(update_environment=True))
 
@@ -130,6 +130,7 @@ def test_find_socket_keeps_first_active_when_multiple_active(
 
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(code_manager.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         CodeManager, "is_socket_closed", staticmethod(lambda _path: False)
     )
@@ -221,7 +222,7 @@ def test_find_latest_code_without_environment_update_keeps_path(
 
     asyncio.run(manager.find_latest_code(update_environment=False))
 
-    assert str(manager.code_path).endswith("commit3/bin/remote-cli")
+    assert manager.code_path == root / "bin" / "commit3" / "bin" / "remote-cli"
     assert os.environ["PATH"] == original_path
 
 

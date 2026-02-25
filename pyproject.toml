@@ -63,8 +63,9 @@ python-version = "3.10"
 all = "error"
 
 [tool.pytest.ini_options]
-addopts = "-x --cov=src/uvscem --cov-branch --cov-fail-under=100 --cov-report=term-missing:skip-covered"
+addopts = "-x --cov=src/uvscem --cov-branch --cov-fail-under=100 --cov-report=term-missing:skip-covered --cov-report=xml:coverage.xml"
 cache_dir = ".venv/.pytest_cache"
+testpaths = ["src"]
 
 [tool.coverage.run]
 data_file = ".venv/.coverage"

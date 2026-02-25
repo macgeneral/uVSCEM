@@ -11,7 +11,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ${{ matrix.os.runner }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os:
           - runner: ubuntu-latest
@@ -67,20 +67,51 @@ jobs:
 
       - name: Unit tests
         if: github.event_name != 'workflow_dispatch'
-        run: uv run pytest src
+        run: uv run pytest
 
       - name: Unit tests (full failure report)
         if: github.event_name == 'workflow_dispatch'
-        run: uv run pytest src --maxfail=0
+        run: uv run pytest --maxfail=0
+
+      - name: Upload coverage artifact
+        if: |
+          runner.os == 'Linux' && matrix.python-version == '3.10' &&
+          (
+            (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main') ||
+            (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
+          )
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 1
 
       - name: Integration tests
         if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
         env:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
-        run: uv run pytest src --slow --no-cov
+        run: uv run pytest --slow --no-cov
 
       - name: Integration tests (full failure report)
         if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
         env:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
-        run: uv run pytest src --slow --no-cov --maxfail=0
+        run: uv run pytest --slow --no-cov --maxfail=0
+
+  upload-coverage:
+    needs: tests
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
+    runs-on: ubuntu-latest
+    environment: codecov
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: coverage-report
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

@@ -30,6 +30,7 @@ This repository is Python 3.10+ and sync-first. Optimize for small, composable m
 - Preserve dependency + extension-pack resolution semantics.
 - Keep compatibility with `devcontainer.json` extension lists (`customizations.vscode.extensions`).
 - Preserve VSCode server path conventions under `~/.vscode-server` unless behavior changes are requested.
+ - Use OS-agnostic paths, sockets, and temporary files by leveraging Python stdlib primitives (for example `pathlib`, `tempfile`, and `socket` internals) rather than hard-coded path strings or platform-specific separators.
 
 ## Typing and style
 

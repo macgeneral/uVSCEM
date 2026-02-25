@@ -5,6 +5,7 @@ import json
 import runpy
 import subprocess
 import sys
+import tempfile
 import zipfile
 from collections import defaultdict
 from contextlib import contextmanager
@@ -109,17 +110,18 @@ def test_init_sets_paths_and_creates_target_dir(
     config_path = tmp_path / "devcontainer.json"
     config_path.write_text("{}")
     target_dir = tmp_path / "target-cache"
+    code_binary = tmp_path / "code"
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(extension_manager, "CodeAPIManager", lambda: SimpleNamespace())
     monkeypatch.setattr(extension_manager, "CodeManager", lambda: SimpleNamespace())
     manager = CodeExtensionManager(
         config_name="devcontainer.json",
-        code_path="/usr/bin/code",
+        code_path=str(code_binary),
         target_directory=str(target_dir),
     )
 
-    assert manager.code_binary == "/usr/bin/code"
+    assert manager.code_binary == str(code_binary)
     assert manager.dev_container_config_path == config_path.resolve()
     assert manager.extensions == []
     assert manager.installed == []
@@ -311,9 +313,16 @@ def test_install_async_iterates_extensions_and_sleeps(
     async def _sleep(_seconds: int) -> None:
         called.append("sleep")
 
+    @contextmanager
+    def _noop_provisioner(install_dir):
+        yield None
+
     monkeypatch.setattr(bare_manager, "exclude_installed", _exclude)
     monkeypatch.setattr(bare_manager, "install_extension", _install)
     monkeypatch.setattr(extension_manager.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(
+        extension_manager, "provision_vsce_sign_binary_for_run", _noop_provisioner
+    )
 
     asyncio.run(bare_manager.install_async())
 
@@ -470,7 +479,8 @@ def test_verify_extension_signature_runs_vsce_sign(
     sig_path = tmp_path / "ext.sigzip"
     vsix_path.write_text("payload")
     sig_path.write_text("payload")
-    bare_manager.vsce_sign_binary = Path("/tmp/vsce-sign")
+    vsce_sign_binary = Path(tempfile.gettempdir()) / "vsce-sign"
+    bare_manager.vsce_sign_binary = vsce_sign_binary
     called: dict[str, list[str]] = {}
 
     def _run(cmd, capture_output, check, text):
@@ -481,7 +491,7 @@ def test_verify_extension_signature_runs_vsce_sign(
 
     asyncio.run(bare_manager.verify_extension_signature(vsix_path, sig_path))
 
-    assert called["cmd"][0] == "/tmp/vsce-sign"
+    assert called["cmd"][0] == str(vsce_sign_binary)
 
 
 def test_verify_extension_signature_raises_when_not_initialized(
@@ -507,7 +517,7 @@ def test_verify_extension_signature_raises_on_nonzero_exit(
     sig_path = tmp_path / "ext.sigzip"
     vsix_path.write_text("payload")
     sig_path.write_text("payload")
-    bare_manager.vsce_sign_binary = Path("/tmp/vsce-sign")
+    bare_manager.vsce_sign_binary = Path(tempfile.gettempdir()) / "vsce-sign"
 
     monkeypatch.setattr(
         extension_manager.subprocess,
@@ -944,7 +954,7 @@ def test_install_extension_verifies_signature_when_present(
     sig_file = bare_manager.target_path / "pub.ext-1.0.0.sigzip"
     vsix_file.write_text("payload")
     sig_file.write_text("signature")
-    bare_manager.vsce_sign_binary = Path("/tmp/vsce-sign")
+    bare_manager.vsce_sign_binary = Path(tempfile.gettempdir()) / "vsce-sign"
 
     called: list[str] = []
 
@@ -976,7 +986,7 @@ def test_install_extension_downloads_missing_signature_archive_before_verify(
     }
     vsix_file = bare_manager.target_path / "pub.ext-1.0.0.vsix"
     vsix_file.write_text("payload")
-    bare_manager.vsce_sign_binary = Path("/tmp/vsce-sign")
+    bare_manager.vsce_sign_binary = Path(tempfile.gettempdir()) / "vsce-sign"
 
     called: list[str] = []
 
@@ -1120,9 +1130,12 @@ def test_extensions_json_path_uses_vscode_root(
 
 
 def test_cli_install_function_uses_expected_constructor_args(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    code_path = tmp_path / "custom" / "code"
+    target_path = tmp_path / "ignored" / "by-current-api"
 
     class _Manager:
         def __init__(
@@ -1142,15 +1155,15 @@ def test_cli_install_function_uses_expected_constructor_args(
 
     extension_manager.install(
         config_name="devcontainer.custom.json",
-        code_path="/custom/code",
-        target_path="/ignored/by/current-api",
+        code_path=str(code_path),
+        target_path=str(target_path),
         log_level="info",
     )
 
     assert captured == {
         "config_name": "devcontainer.custom.json",
-        "code_path": "/custom/code",
-        "target_directory": "/ignored/by/current-api",
+        "code_path": str(code_path),
+        "target_directory": str(target_path),
         "initialized": True,
         "installed": True,
     }
@@ -1224,7 +1237,7 @@ def test_install_async_iterates_and_sleeps(
     @contextmanager
     def _provisioner(install_dir):
         called.append(f"provision:{install_dir}")
-        yield Path("/tmp/vsce-sign")
+        yield Path(tempfile.gettempdir()) / "vsce-sign"
         called.append("cleanup")
 
     monkeypatch.setattr(bare_manager, "install_extension", _install_extension)
@@ -1406,6 +1419,7 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert parsed.config_name == "a.json"
 
     called: dict[str, str] = {}
+    cache_path = Path(tempfile.gettempdir()) / "cache"
 
     monkeypatch.setattr(
         extension_manager,
@@ -1425,7 +1439,7 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
         lambda self: SimpleNamespace(
             config_name="cfg.json",
             code_path="code-bin",
-            target_path="/tmp/cache",
+            target_path=str(cache_path),
             log_level="debug",
         ),
     )
@@ -1435,7 +1449,7 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert called == {
         "config_name": "cfg.json",
         "code_path": "code-bin",
-        "target_path": "/tmp/cache",
+        "target_path": str(cache_path),
         "log_level": "debug",
     }
 
@@ -1452,6 +1466,8 @@ def test_build_parser_accepts_export_and_import_commands() -> None:
 
 def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, str] = {}
+    cache_path = Path(tempfile.gettempdir()) / "cache"
+    bundle_path = Path(tempfile.gettempdir()) / "bundle"
 
     monkeypatch.setattr(
         extension_manager,
@@ -1477,8 +1493,8 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda self: SimpleNamespace(
             command="export",
             config_name="cfg.json",
-            bundle_path="/tmp/bundle",
-            target_path="/tmp/cache",
+            bundle_path=str(bundle_path),
+            target_path=str(cache_path),
             code_path="code-bin",
             log_level="debug",
             vsce_sign_version="2.0.6",
@@ -1491,8 +1507,8 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert called == {
         "config_name": "cfg.json",
-        "bundle_path": "/tmp/bundle",
-        "target_path": "/tmp/cache",
+        "bundle_path": str(bundle_path),
+        "target_path": str(cache_path),
         "code_path": "code-bin",
         "log_level": "debug",
         "vsce_sign_version": "2.0.6",
@@ -1503,6 +1519,9 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_main_routes_import_command(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, str] = {}
+    cache_path = Path(tempfile.gettempdir()) / "cache"
+    bundle_path = Path(tempfile.gettempdir()) / "bundle"
+    keyring_path = Path(tempfile.gettempdir()) / "keyring.gpg"
 
     monkeypatch.setattr(
         extension_manager,
@@ -1527,27 +1546,27 @@ def test_main_routes_import_command(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda self: SimpleNamespace(
             command="import",
             config_name="cfg.json",
-            bundle_path="/tmp/bundle",
-            target_path="/tmp/cache",
+            bundle_path=str(bundle_path),
+            target_path=str(cache_path),
             code_path="code-bin",
             log_level="debug",
             vsce_sign_version="2.0.6",
             strict_offline=True,
             verify_manifest_signature=True,
-            manifest_verification_keyring="/tmp/keyring.gpg",
+            manifest_verification_keyring=str(keyring_path),
         ),
     )
 
     extension_manager.main()
 
     assert called == {
-        "bundle_path": "/tmp/bundle",
+        "bundle_path": str(bundle_path),
         "code_path": "code-bin",
-        "target_path": "/tmp/cache",
+        "target_path": str(cache_path),
         "log_level": "debug",
         "strict_offline": "True",
         "verify_manifest_signature": "True",
-        "manifest_verification_keyring": "/tmp/keyring.gpg",
+        "manifest_verification_keyring": str(keyring_path),
     }
 
 
@@ -1644,6 +1663,7 @@ def test_verify_bundle_manifest_signature_invokes_gpg_with_keyring(
 ) -> None:
     manifest_path = tmp_path / "manifest.json"
     signature_path = tmp_path / "manifest.json.asc"
+    keyring_path = tmp_path / "keyring.gpg"
     called: list[list[str]] = []
 
     def _run_command(cmd: list[str]) -> None:
@@ -1654,7 +1674,7 @@ def test_verify_bundle_manifest_signature_invokes_gpg_with_keyring(
     extension_manager._verify_bundle_manifest_signature(
         manifest_path,
         signature_path,
-        verification_keyring="/tmp/keyring.gpg",
+        verification_keyring=str(keyring_path),
     )
 
     assert called == [
@@ -1663,7 +1683,7 @@ def test_verify_bundle_manifest_signature_invokes_gpg_with_keyring(
             "--batch",
             "--no-default-keyring",
             "--keyring",
-            "/tmp/keyring.gpg",
+            str(keyring_path),
             "--verify",
             str(signature_path),
             str(manifest_path),
@@ -2502,18 +2522,20 @@ def test_import_offline_bundle_verifies_manifest_signature_with_keyring(
     )
     monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
 
+    keyring_path = tmp_path / "keyring.gpg"
+
     extension_manager.import_offline_bundle(
         bundle_path=str(bundle_path),
         target_path=str(tmp_path / "cache"),
         verify_manifest_signature=True,
-        manifest_verification_keyring="/tmp/keyring.gpg",
+        manifest_verification_keyring=str(keyring_path),
     )
 
     assert verified == [
         (
             str(bundle_path / "manifest.json"),
             str(bundle_path / "manifest.json.asc"),
-            "/tmp/keyring.gpg",
+            str(keyring_path),
         )
     ]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
 import shlex
 import shutil
 import socket
@@ -43,7 +44,7 @@ class CodeManager(object):
                 os.environ["VSCODE_IPC_HOOK_CLI"] = existing_hook
             return
 
-        if os.name == "nt":
+        if platform.system().lower() == "windows":
             return
 
         # VSCode uses either /run/userid/ or /tmp/ if not set
@@ -53,8 +54,7 @@ class CodeManager(object):
         sockets: list[Path] = sorted(socket_dir.glob("vscode-ipc-*.sock"))
         no_socket: bool = True
 
-        for s in sockets:
-            socket_path = Path(socket_dir, s)
+        for socket_path in sockets:
             if self.is_socket_closed(socket_path):
                 logger.debug(f"Removing stale socket {socket_path}")
                 Path.unlink(socket_path)

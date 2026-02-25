@@ -116,12 +116,13 @@ class CodeExtensionManager(object):
         self.api_manager = CodeAPIManager()
         self.socket_manager = CodeManager()
         self.code_binary = code_path
+        config_path = Path(config_name)
         self.dev_container_config_path = (
-            Path(config_name)
-            if config_name.startswith("/")
+            config_path
+            if config_path.is_absolute()
             else Path.cwd()
             .joinpath(
-                f"{config_name}",
+                config_path,
             )
             .absolute()
         )

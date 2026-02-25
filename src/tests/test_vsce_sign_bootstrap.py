@@ -70,7 +70,7 @@ def test_is_musl_linux_uses_alpine_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     def _is_file(self: Path) -> bool:
-        return str(self) == "/etc/alpine-release"
+        return self == Path("/etc/alpine-release")
 
     monkeypatch.setattr(vsce_sign_bootstrap.Path, "is_file", _is_file)
 
@@ -741,6 +741,7 @@ def test_provision_for_run_cleans_temp_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     temp_dir = tmp_path / "temp-install"
+    install_dir = tmp_path / "install-root"
     temp_dir.mkdir(parents=True, exist_ok=True)
     binary = temp_dir / "vsce-sign"
     binary.write_text("bin")
@@ -756,7 +757,9 @@ def test_provision_for_run_cleans_temp_on_success(
         ),
     )
 
-    with vsce_sign_bootstrap.provision_vsce_sign_binary_for_run("/irrelevant") as path:
+    with vsce_sign_bootstrap.provision_vsce_sign_binary_for_run(
+        str(install_dir)
+    ) as path:
         assert path == binary
         assert temp_dir.exists()
 
@@ -768,6 +771,7 @@ def test_provision_for_run_keeps_temp_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     temp_dir = tmp_path / "temp-install"
+    install_dir = tmp_path / "install-root"
     temp_dir.mkdir(parents=True, exist_ok=True)
     binary = temp_dir / "vsce-sign"
     binary.write_text("bin")
@@ -784,7 +788,7 @@ def test_provision_for_run_keeps_temp_on_failure(
     )
 
     with pytest.raises(RuntimeError):
-        with vsce_sign_bootstrap.provision_vsce_sign_binary_for_run("/irrelevant"):
+        with vsce_sign_bootstrap.provision_vsce_sign_binary_for_run(str(install_dir)):
             raise RuntimeError("run failed")
 
     assert not temp_dir.exists()
@@ -802,10 +806,13 @@ def test_main_prints_installed_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    expected_path = Path(tempfile.gettempdir()) / "vsce-sign"
+    install_dir = str(Path(tempfile.gettempdir()) / "bin")
+
     monkeypatch.setattr(
         vsce_sign_bootstrap,
         "install_vsce_sign_binary",
-        lambda install_dir, version, force: Path("/tmp/vsce-sign"),
+        lambda install_dir, version, force: expected_path,
     )
     monkeypatch.setattr(
         vsce_sign_bootstrap.argparse.ArgumentParser,
@@ -814,7 +821,7 @@ def test_main_prints_installed_path(
             "_Args",
             (),
             {
-                "install_dir": "/tmp/bin",
+                "install_dir": install_dir,
                 "version": "2.0.6",
                 "force": True,
             },
@@ -823,7 +830,7 @@ def test_main_prints_installed_path(
 
     vsce_sign_bootstrap.main()
 
-    assert capsys.readouterr().out.strip() == "/tmp/vsce-sign"
+    assert capsys.readouterr().out.strip() == str(expected_path)
 
 
 def test_module_main_guard_executes_main(monkeypatch: pytest.MonkeyPatch) -> None:

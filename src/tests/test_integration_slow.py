@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import requests
 
 import uvscem.code_manager as code_manager_module
 import uvscem.extension_manager as extension_manager_module
@@ -223,17 +224,25 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
     tampered_vsix_path = tmp_path / "tampered.vsix"
     tampered_vsix_path.write_bytes(bytes(payload))
 
-    with provision_vsce_sign_binary_for_run(install_dir=tmp_path / "bin") as binary:
-        manager.vsce_sign_binary = binary
-        try:
-            with pytest.raises(subprocess.CalledProcessError):
-                asyncio.run(
-                    manager.verify_extension_signature(
-                        tampered_vsix_path, signature_path
+    try:
+        with provision_vsce_sign_binary_for_run(
+            install_dir=_artifact_cache_dir(tmp_path, "vsce-sign-bin"),
+            verify_existing_checksum=False,
+        ) as binary:
+            manager.vsce_sign_binary = binary
+            try:
+                with pytest.raises(subprocess.CalledProcessError):
+                    asyncio.run(
+                        manager.verify_extension_signature(
+                            tampered_vsix_path, signature_path
+                        )
                     )
-                )
-        finally:
-            manager.vsce_sign_binary = None
+            finally:
+                manager.vsce_sign_binary = None
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code in (403, 404):
+            pytest.skip(f"vsce-sign binary unavailable from npm registry: {exc}")
+        raise
 
 
 @pytest.mark.slow
