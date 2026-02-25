@@ -323,6 +323,20 @@ def test_is_socket_closed_branches(
     error: Exception,
     expected: bool,
 ) -> None:
+    monkeypatch.setattr(socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), raising=False)
+    monkeypatch.setattr(
+        socket,
+        "MSG_DONTWAIT",
+        getattr(socket, "MSG_DONTWAIT", 0x40),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        socket,
+        "MSG_PEEK",
+        getattr(socket, "MSG_PEEK", 0x02),
+        raising=False,
+    )
+
     class _FakeSocket:
         def connect(self, _value: str) -> None:
             return None
@@ -341,6 +355,20 @@ def test_is_socket_closed_branches(
 def test_is_socket_closed_returns_false_when_recv_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), raising=False)
+    monkeypatch.setattr(
+        socket,
+        "MSG_DONTWAIT",
+        getattr(socket, "MSG_DONTWAIT", 0x40),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        socket,
+        "MSG_PEEK",
+        getattr(socket, "MSG_PEEK", 0x02),
+        raising=False,
+    )
+
     class _FakeSocket:
         def connect(self, _value: str) -> None:
             return None
@@ -358,7 +386,7 @@ def test_is_socket_closed_returns_false_when_recv_succeeds(
 def test_is_socket_closed_returns_false_when_unix_socket_capabilities_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delattr(socket, "AF_UNIX")
+    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
 
     assert (
         CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock") is False
@@ -368,6 +396,20 @@ def test_is_socket_closed_returns_false_when_unix_socket_capabilities_missing(
 def test_is_socket_closed_closes_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), raising=False)
+    monkeypatch.setattr(
+        socket,
+        "MSG_DONTWAIT",
+        getattr(socket, "MSG_DONTWAIT", 0x40),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        socket,
+        "MSG_PEEK",
+        getattr(socket, "MSG_PEEK", 0x02),
+        raising=False,
+    )
+
     class _FakeSocket:
         def __init__(self) -> None:
             self.closed = False
@@ -393,6 +435,20 @@ def test_is_socket_closed_closes_socket(
 def test_is_socket_closed_handles_non_callable_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), raising=False)
+    monkeypatch.setattr(
+        socket,
+        "MSG_DONTWAIT",
+        getattr(socket, "MSG_DONTWAIT", 0x40),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        socket,
+        "MSG_PEEK",
+        getattr(socket, "MSG_PEEK", 0x02),
+        raising=False,
+    )
+
     class _FakeSocket:
         close = None
 
@@ -412,6 +468,20 @@ def test_is_socket_closed_handles_non_callable_close(
 def test_is_socket_closed_handles_socket_creation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), raising=False)
+    monkeypatch.setattr(
+        socket,
+        "MSG_DONTWAIT",
+        getattr(socket, "MSG_DONTWAIT", 0x40),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        socket,
+        "MSG_PEEK",
+        getattr(socket, "MSG_PEEK", 0x02),
+        raising=False,
+    )
+
     def _raise_socket(*_args, **_kwargs):
         raise RuntimeError("boom")
 

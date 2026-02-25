@@ -58,9 +58,9 @@ jobs:
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: .tmp/uvscem-test-artifacts
-          key: ${{ runner.os }}-integration-artifacts-${{ hashFiles('src/tests/assets/test_extensions.json', 'pyproject.toml') }}
+          key: ${{ runner.os }}-integration-artifacts-v2-${{ hashFiles('src/tests/assets/test_extensions.json', 'src/tests/test_integration_slow.py', 'src/uvscem/extension_manager.py', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-integration-artifacts-
+            ${{ runner.os }}-integration-artifacts-v2-
 
       - name: Install dependencies
         run: uv sync --frozen --group dev

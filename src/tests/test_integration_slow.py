@@ -135,8 +135,10 @@ def test_integration_fetch_install_uninstall_with_verification(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    code_binary = shutil.which("code") or "code"
-    isolated_code_binary = _isolated_code_binary(code_binary, tmp_path)
+    code_binary = shutil.which("code")
+    isolated_code_binary = (
+        _isolated_code_binary(code_binary, tmp_path) if code_binary else "code"
+    )
     sandbox_vscode_root = tmp_path / "vscode-server"
     sandbox_extensions = sandbox_vscode_root / "extensions"
     sandbox_extensions.mkdir(parents=True, exist_ok=True)
@@ -155,6 +157,8 @@ def test_integration_fetch_install_uninstall_with_verification(
     extensions = manager.extensions or _load_extensions(config_path)
 
     try:
+        if not code_binary:
+            pytest.skip("VS Code CLI not available for install/uninstall validation")
         asyncio.run(manager.install_async())
 
         for extension_id in extensions:
@@ -307,7 +311,7 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     )
 
     bundle_path = tmp_path / "bundle"
-    code_binary = shutil.which("code") or "code"
+    code_binary = shutil.which("code")
     sandbox_vscode_root = tmp_path / "vscode-server"
     sandbox_extensions = sandbox_vscode_root / "extensions"
     sandbox_extensions.mkdir(parents=True, exist_ok=True)
@@ -320,16 +324,8 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
             config_name=str(config_path),
             bundle_path=str(bundle_path),
             target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
-            code_path=code_binary,
+            code_path=code_binary or "code",
         )
-
-        with _misconfigured_proxy(monkeypatch):
-            extension_manager_module.import_offline_bundle(
-                bundle_path=str(bundle_path),
-                target_path=str(tmp_path / "import-cache"),
-                code_path=code_binary,
-                strict_offline=True,
-            )
 
         manifest = json.loads(
             (bundle_path / "manifest.json").read_text(encoding="utf-8")
@@ -347,9 +343,23 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
             assert str(extension_entries.get(extension_id, {}).get("version", "")) == (
                 resolved_version
             )
+
+        if not code_binary:
+            return
+
+        with _misconfigured_proxy(monkeypatch):
+            extension_manager_module.import_offline_bundle(
+                bundle_path=str(bundle_path),
+                target_path=str(tmp_path / "import-cache"),
+                code_path=code_binary,
+                strict_offline=True,
+            )
+
+        assert extension_id in set(ordered_extensions)
     finally:
-        for installed_extension_id in set(ordered_extensions + [extension_id]):
-            _uninstall_extension(code_binary, installed_extension_id)
+        if code_binary:
+            for installed_extension_id in set(ordered_extensions + [extension_id]):
+                _uninstall_extension(code_binary, installed_extension_id)
 
 
 @pytest.mark.slow
