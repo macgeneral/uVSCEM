@@ -4,17 +4,22 @@ on:
   workflow_run:
     workflows: ["Test"]
     types: [completed]
-    branches: ['v*.*.*'] 
 
 jobs:
-  publish:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')}}
+  check:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
+    outputs:
+      should_publish: ${{ steps.release_tag.outputs.should_publish }}
+      release_tag: ${{ steps.release_tag.outputs.release_tag }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
       - name: Resolve release tag from tested commit
         id: release_tag
         run: |
@@ -22,7 +27,7 @@ jobs:
           TAG_COUNT="$(echo "${TAGS}" | sed '/^$/d' | wc -l | tr -d ' ')"
 
           if [[ "${TAG_COUNT}" -eq 0 ]]; then
-            echo "No release tag found on tested commit; skipping publish steps."
+            echo "No release tag found on tested commit; skipping publish."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -38,18 +43,31 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "should_publish=true" >> "$GITHUB_OUTPUT"
 
+  publish:
+    needs: check
+    if: ${{ needs.check.outputs.should_publish == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
       - name: Validate semantic version tag
-        if: steps.release_tag.outputs.should_publish == 'true'
         run: |
           SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
-          RELEASE_TAG="${{ steps.release_tag.outputs.release_tag }}"
+          RELEASE_TAG="${{ needs.check.outputs.release_tag }}"
           if ! [[ "${RELEASE_TAG}" =~ ${SEMVER_REGEX} ]]; then
             echo "Tag ${RELEASE_TAG} is not a valid version tag (expected v<major>.<minor>.<patch> with only numeric parts)"
             exit 1
           fi
 
       - name: Import tag signing key from GitHub API
-        if: steps.release_tag.outputs.should_publish == 'true'
         env:
           EXPECTED_SIGNER_GITHUB_LOGIN: ${{ vars.PYPI_TAG_SIGNER_GITHUB_LOGIN }}
         run: |
@@ -85,11 +103,10 @@ jobs:
           gpg --batch --import /tmp/tag-signer-keys.asc
 
       - name: Verify tag signature
-        if: steps.release_tag.outputs.should_publish == 'true'
         env:
           EXPECTED_SIGNER: ${{ vars.PYPI_TAG_SIGNER }}
         run: |
-          RELEASE_TAG="${{ steps.release_tag.outputs.release_tag }}"
+          RELEASE_TAG="${{ needs.check.outputs.release_tag }}"
           VERIFY_OUTPUT="$(git tag -v "${RELEASE_TAG}" 2>&1)"
           echo "${VERIFY_OUTPUT}"
 
@@ -100,13 +117,11 @@ jobs:
           fi
 
       - name: Set up Python
-        if: steps.release_tag.outputs.should_publish == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.10"
 
       - name: Install uv
-        if: steps.release_tag.outputs.should_publish == 'true'
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.10.6"
@@ -116,30 +131,20 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-
       - name: Install dependencies
-        if: steps.release_tag.outputs.should_publish == 'true'
         run: uv sync --frozen --group publish
 
       - name: Build distributions
-        if: steps.release_tag.outputs.should_publish == 'true'
         run: uv build
 
       - name: Publish to PyPI
-        if: steps.release_tag.outputs.should_publish == 'true'
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           attestations: true
 
       - name: Create GitHub Release
-        if: steps.release_tag.outputs.should_publish == 'true'
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
-          tag_name: ${{ steps.release_tag.outputs.release_tag }}
+          tag_name: ${{ needs.check.outputs.release_tag }}
           generate_release_notes: true
           make_latest: true

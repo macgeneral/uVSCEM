@@ -10,11 +10,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import requests
 
 import uvscem.code_manager as code_manager_module
 import uvscem.extension_manager as extension_manager_module
-from uvscem.exceptions import OfflineBundleExportError
 from uvscem.extension_manager import CodeExtensionManager
 from uvscem.vsce_sign_bootstrap import provision_vsce_sign_binary_for_run
 
@@ -225,25 +223,20 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
     tampered_vsix_path = tmp_path / "tampered.vsix"
     tampered_vsix_path.write_bytes(bytes(payload))
 
-    try:
-        with provision_vsce_sign_binary_for_run(
-            install_dir=_artifact_cache_dir(tmp_path, "vsce-sign-bin"),
-            verify_existing_checksum=False,
-        ) as binary:
-            manager.vsce_sign_binary = binary
-            try:
-                with pytest.raises(subprocess.CalledProcessError):
-                    asyncio.run(
-                        manager.verify_extension_signature(
-                            tampered_vsix_path, signature_path
-                        )
+    with provision_vsce_sign_binary_for_run(
+        install_dir=_artifact_cache_dir(tmp_path, "vsce-sign-bin"),
+        verify_existing_checksum=False,
+    ) as binary:
+        manager.vsce_sign_binary = binary
+        try:
+            with pytest.raises(subprocess.CalledProcessError):
+                asyncio.run(
+                    manager.verify_extension_signature(
+                        tampered_vsix_path, signature_path
                     )
-            finally:
-                manager.vsce_sign_binary = None
-    except requests.exceptions.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code in (403, 404):
-            pytest.skip(f"vsce-sign binary unavailable from npm registry: {exc}")
-        raise
+                )
+        finally:
+            manager.vsce_sign_binary = None
 
 
 @pytest.mark.slow
@@ -330,22 +323,12 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     monkeypatch.setattr(extension_manager_module, "vscode_root", sandbox_vscode_root)
     ordered_extensions: list[str] = []
     try:
-        try:
-            extension_manager_module.export_offline_bundle(
-                config_name=str(config_path),
-                bundle_path=str(bundle_path),
-                target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
-                code_path=code_binary or "code",
-            )
-        except OfflineBundleExportError as exc:
-            cause = exc.__cause__
-            if (
-                isinstance(cause, requests.exceptions.HTTPError)
-                and cause.response is not None
-                and cause.response.status_code in (403, 404)
-            ):
-                pytest.skip(f"vsce-sign binary unavailable from npm registry: {cause}")
-            raise
+        extension_manager_module.export_offline_bundle(
+            config_name=str(config_path),
+            bundle_path=str(bundle_path),
+            target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
+            code_path=code_binary or "code",
+        )
 
         manifest = json.loads(
             (bundle_path / "manifest.json").read_text(encoding="utf-8")

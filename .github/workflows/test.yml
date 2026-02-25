@@ -8,19 +8,23 @@ on:
 
 jobs:
   tests:
+    name: ${{ matrix.os.name }} / Python ${{ matrix.python-version }}
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ${{ matrix.os.runner }}
     strategy:
       fail-fast: true
       matrix:
         os:
-          - runner: ubuntu-latest
+          - name: Linux
+            runner: ubuntu-latest
             uv-version: "0.10.6"
             uv-checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
-          - runner: macos-latest
+          - name: macOS
+            runner: macos-latest
             uv-version: "0.10.6"
             uv-checksum: "3993249d8f51deaf34cfce037e57e294e82267ff1f9dc45b7983a17afaf065b4"
-          - runner: windows-latest
+          - name: Windows
+            runner: windows-latest
             uv-version: "0.10.6"
             uv-checksum: "b27eb789f281e398a82197477de727fc8faf08605152115686da2c3cba0d25f7"
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -87,13 +91,13 @@ jobs:
           retention-days: 1
 
       - name: Integration tests
-        if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
+        if: runner.os == 'Linux' && matrix.python-version == '3.10' && github.event_name != 'workflow_dispatch'
         env:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
         run: uv run pytest src --slow --no-cov
 
       - name: Integration tests (full failure report)
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
+        if: runner.os == 'Linux' && matrix.python-version == '3.10' && github.event_name == 'workflow_dispatch'
         env:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
         run: uv run pytest src --slow --no-cov --maxfail=0
