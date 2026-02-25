@@ -13,26 +13,10 @@ from uvscem.code_manager import CodeManager
 
 
 def test_init_calls_socket_and_code_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
+    manager = CodeManager()
 
-    monkeypatch.setattr(
-        CodeManager,
-        "find_socket",
-        lambda self, update_environment=False: calls.append(
-            f"socket:{update_environment}"
-        ),
-    )
-    monkeypatch.setattr(
-        CodeManager,
-        "find_latest_code",
-        lambda self, update_environment=False: calls.append(
-            f"code:{update_environment}"
-        ),
-    )
-
-    CodeManager()
-
-    assert calls == ["socket:True", "code:True"]
+    assert manager.socket_path is None
+    assert manager.code_path is None
 
 
 def test_find_socket_removes_stale_and_sets_environment(
@@ -54,7 +38,7 @@ def test_find_socket_removes_stale_and_sets_environment(
         staticmethod(lambda path: path.name.endswith("stale.sock")),
     )
 
-    manager.find_socket(update_environment=True)
+    asyncio.run(manager.find_socket(update_environment=True))
 
     assert not stale.exists()
     assert manager.socket_path == active
@@ -76,7 +60,7 @@ def test_find_socket_without_any_socket_keeps_environment_unchanged(
     )
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
 
-    manager.find_socket(update_environment=True)
+    asyncio.run(manager.find_socket(update_environment=True))
 
     assert manager.socket_path is None
     assert "VSCODE_IPC_HOOK_CLI" not in os.environ
@@ -99,7 +83,7 @@ def test_find_socket_keeps_first_active_when_multiple_active(
         CodeManager, "is_socket_closed", staticmethod(lambda _path: False)
     )
 
-    manager.find_socket(update_environment=False)
+    asyncio.run(manager.find_socket(update_environment=False))
 
     assert manager.socket_path == first
 
@@ -127,7 +111,7 @@ def test_find_latest_code_updates_path(
     monkeypatch.setattr(code_manager, "vscode_root", root)
     monkeypatch.setenv("PATH", "")
 
-    manager.find_latest_code(update_environment=True)
+    asyncio.run(manager.find_latest_code(update_environment=True))
 
     expected = str(root / "bin" / "commit2" / "bin" / "remote-cli")
     assert str(manager.code_path) == expected
@@ -149,7 +133,7 @@ def test_find_latest_code_reorders_when_path_has_duplicates(
     manager = CodeManager.__new__(CodeManager)
     manager.socket_path = None
     manager.code_path = None
-    manager.find_latest_code(update_environment=True)
+    asyncio.run(manager.find_latest_code(update_environment=True))
 
     path_items = os.environ["PATH"].split(":")
     assert path_items[0] == expected
@@ -171,7 +155,7 @@ def test_find_latest_code_without_environment_update_keeps_path(
     monkeypatch.setattr(code_manager, "vscode_root", root)
     monkeypatch.setenv("PATH", "alpha:beta")
 
-    manager.find_latest_code(update_environment=False)
+    asyncio.run(manager.find_latest_code(update_environment=False))
 
     assert str(manager.code_path).endswith("commit3/bin/remote-cli")
     assert os.environ["PATH"] == "alpha:beta"
@@ -188,17 +172,24 @@ def test_find_latest_code_handles_missing_or_invalid_versions(
     monkeypatch.setattr(code_manager, "vscode_root", root)
 
     with caplog.at_level("WARNING"):
-        manager.find_latest_code(update_environment=True)
+        asyncio.run(manager.find_latest_code(update_environment=True))
 
     assert "No VSCode remote CLI executable found" in caplog.text
 
     _write_code_launcher(
         root / "bin" / "commit-a" / "bin" / "remote-cli" / "code", "1.0.0", "commit-a"
     )
-    monkeypatch.setattr(builtins, "max", lambda _values: "missing")
+    original_max = builtins.max
+
+    def _max(values, *args, **kwargs):
+        if not args and not kwargs:
+            return "missing"
+        return original_max(values, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "max", _max)
 
     with caplog.at_level("WARNING"):
-        manager.find_latest_code(update_environment=True)
+        asyncio.run(manager.find_latest_code(update_environment=True))
 
     assert "Unable to determine latest VSCode version" in caplog.text
 
@@ -218,7 +209,7 @@ def test_find_latest_code_ignores_launcher_missing_commit(
     monkeypatch.setattr(code_manager, "vscode_root", root)
 
     with caplog.at_level("WARNING"):
-        manager.find_latest_code(update_environment=False)
+        asyncio.run(manager.find_latest_code(update_environment=False))
 
     assert "No VSCode remote CLI executable found" in caplog.text
 
@@ -264,19 +255,19 @@ def test_is_socket_closed_returns_false_when_recv_succeeds(
     assert CodeManager.is_socket_closed(Path("/tmp/fake.sock")) is False
 
 
-def test_async_code_manager_wrappers_delegate_to_sync_methods() -> None:
+def test_async_code_manager_methods_delegate_to_private_sync_methods() -> None:
     manager = CodeManager.__new__(CodeManager)
     calls: list[str] = []
 
-    manager.find_socket = lambda update_environment=False: calls.append(
+    manager._find_socket_sync = lambda update_environment=False: calls.append(
         f"socket:{update_environment}"
     )
-    manager.find_latest_code = lambda update_environment=False: calls.append(
+    manager._find_latest_code_sync = lambda update_environment=False: calls.append(
         f"code:{update_environment}"
     )
 
-    asyncio.run(manager.find_socket_async(update_environment=True))
-    asyncio.run(manager.find_latest_code_async(update_environment=False))
-    asyncio.run(manager.initialize_async())
+    asyncio.run(manager.find_socket(update_environment=True))
+    asyncio.run(manager.find_latest_code(update_environment=False))
+    asyncio.run(manager.initialize())
 
     assert calls == ["socket:True", "code:False", "socket:True", "code:True"]

@@ -35,7 +35,7 @@ def test_get_vscode_extension_handles_pagination_and_flags() -> None:
 
     manager.session = SimpleNamespace(post=_post)
 
-    result = list(
+    result = asyncio.run(
         manager.get_vscode_extension(
             extension_id="publisher.name",
             page_size=2,
@@ -73,7 +73,7 @@ def test_get_vscode_extension_supports_minimal_flag_set() -> None:
         )
     )
 
-    result = list(
+    result = asyncio.run(
         manager.get_vscode_extension(
             extension_id="publisher.name",
             max_page=1,
@@ -111,7 +111,7 @@ def test_get_vscode_extension_covers_additional_flag_paths() -> None:
 
     manager.session = SimpleNamespace(post=lambda *_args, **_kwargs: _Response())
 
-    result = list(
+    result = asyncio.run(
         manager.get_vscode_extension(
             max_page=0,
             include_versions=False,
@@ -203,9 +203,9 @@ def _build_extension_payload() -> dict:
 
 def test_get_extension_metadata_skips_prerelease_by_default() -> None:
     manager = CodeAPIManager.__new__(CodeAPIManager)
-    manager.get_vscode_extension = lambda **_kwargs: [_build_extension_payload()]
+    manager._get_vscode_extension_sync = lambda **_kwargs: [_build_extension_payload()]
 
-    result = manager.get_extension_metadata("publisher.name")
+    result = asyncio.run(manager.get_extension_metadata("publisher.name"))
     versions = result["publisher.name"]
 
     assert len(versions) == 1
@@ -222,10 +222,12 @@ def test_get_extension_metadata_skips_prerelease_by_default() -> None:
 
 def test_get_extension_metadata_can_include_prerelease_versions() -> None:
     manager = CodeAPIManager.__new__(CodeAPIManager)
-    manager.get_vscode_extension = lambda **_kwargs: [_build_extension_payload()]
+    manager._get_vscode_extension_sync = lambda **_kwargs: [_build_extension_payload()]
 
-    result = manager.get_extension_metadata(
-        "publisher.name", include_latest_stable_version_only=False
+    result = asyncio.run(
+        manager.get_extension_metadata(
+            "publisher.name", include_latest_stable_version_only=False
+        )
     )
     versions = result["publisher.name"]
 
@@ -237,7 +239,7 @@ def test_get_extension_metadata_can_include_prerelease_versions() -> None:
 
 def test_get_extension_metadata_handles_extension_without_versions() -> None:
     manager = CodeAPIManager.__new__(CodeAPIManager)
-    manager.get_vscode_extension = lambda **_kwargs: [
+    manager._get_vscode_extension_sync = lambda **_kwargs: [
         {
             "extensionId": "id",
             "extensionName": "name",
@@ -247,18 +249,25 @@ def test_get_extension_metadata_handles_extension_without_versions() -> None:
         }
     ]
 
-    result = manager.get_extension_metadata("publisher.name")
+    result = asyncio.run(manager.get_extension_metadata("publisher.name"))
 
     assert result == {"publisher.name": []}
 
 
-def test_async_api_wrappers_delegate_to_sync_methods() -> None:
+def test_async_api_methods_use_private_sync_helpers() -> None:
     manager = CodeAPIManager.__new__(CodeAPIManager)
-    manager.get_vscode_extension = lambda **_kwargs: [{"id": "one"}, {"id": "two"}]
-    manager.get_extension_metadata = lambda *args, **kwargs: {"publisher.name": []}
+    manager._get_vscode_extension_sync = lambda **_kwargs: [
+        {"id": "one"},
+        {"id": "two"},
+    ]
+    manager._get_extension_metadata_sync = lambda *args, **kwargs: {
+        "publisher.name": []
+    }
 
-    extensions = asyncio.run(manager.get_vscode_extension_async(extension_id="publisher.name"))
-    metadata = asyncio.run(manager.get_extension_metadata_async("publisher.name"))
+    extensions = asyncio.run(
+        manager.get_vscode_extension(extension_id="publisher.name")
+    )
+    metadata = asyncio.run(manager.get_extension_metadata("publisher.name"))
 
     assert extensions == [{"id": "one"}, {"id": "two"}]
     assert metadata == {"publisher.name": []}

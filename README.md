@@ -42,6 +42,19 @@ uv run ruff check .
 uv run ty check
 ```
 
+## Installing `vsce-sign` without Node.js
+
+To verify marketplace extension signatures in hosts/containers that do not ship Node.js, uVSCEM provides a small bootstrap helper that downloads the correct platform-specific `@vscode/vsce-sign-*` binary package from npm registry, verifies its integrity hash, and installs the binary.
+
+```bash
+uv run python -m uvscem.vsce_sign_bootstrap --install-dir /usr/local/bin
+```
+
+Optional flags:
+
+- `--version` to pin a specific `vsce-sign` package version (default: `2.0.6`)
+- `--force` to overwrite an existing binary in the install directory
+
 If you have a proxy (e.g. [Cntlm](https://cntlm.sourceforge.net)) listening on `localhost` it's best to add a line in your `/etc/hosts` or `C:\Windows\system32\drivers\etc\hosts` file (if you have the required admin permissions to do so):
 ```
 127.0.0.1	localproxy

@@ -28,10 +28,10 @@ class CodeManager(object):
     code_path: Path | None = None
 
     def __init__(self) -> None:
-        self.find_socket(update_environment=True)
-        self.find_latest_code(update_environment=True)
+        self.socket_path = None
+        self.code_path = None
 
-    def find_socket(self, update_environment: bool = False) -> None:
+    def _find_socket_sync(self, update_environment: bool = False) -> None:
         """Find all VSCode Unix sockets."""
         # VSCode uses either /run/userid/ or /tmp/ if not set
         socket_dir: Path = Path(
@@ -54,7 +54,7 @@ class CodeManager(object):
         if update_environment and self.socket_path is not None:
             os.environ["VSCODE_IPC_HOOK_CLI"] = f"{self.socket_path}"
 
-    def find_latest_code(self, update_environment: bool = False) -> None:
+    def _find_latest_code_sync(self, update_environment: bool = False) -> None:
         """Find all 'code' executables."""
         vscode_versions: dict = {}
         vscode_dir: Path = vscode_root.joinpath("bin")
@@ -128,15 +128,15 @@ class CodeManager(object):
             return False
         return False
 
-    async def find_socket_async(self, update_environment: bool = False) -> None:
+    async def find_socket(self, update_environment: bool = False) -> None:
         """Asynchronously find VSCode Unix sockets."""
-        await asyncio.to_thread(self.find_socket, update_environment)
+        await asyncio.to_thread(self._find_socket_sync, update_environment)
 
-    async def find_latest_code_async(self, update_environment: bool = False) -> None:
+    async def find_latest_code(self, update_environment: bool = False) -> None:
         """Asynchronously find the latest VSCode remote CLI executable."""
-        await asyncio.to_thread(self.find_latest_code, update_environment)
+        await asyncio.to_thread(self._find_latest_code_sync, update_environment)
 
-    async def initialize_async(self) -> None:
+    async def initialize(self) -> None:
         """Asynchronously initialize socket and CLI discovery."""
-        await self.find_socket_async(update_environment=True)
-        await self.find_latest_code_async(update_environment=True)
+        await self.find_socket(update_environment=True)
+        await self.find_latest_code(update_environment=True)

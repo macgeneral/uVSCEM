@@ -8,16 +8,23 @@ import pytest
 
 
 class _ManagerStub:
-    def __init__(self, config_name: str, code_path: str) -> None:
+    def __init__(
+        self, config_name: str, code_path: str, target_directory: str = ""
+    ) -> None:
         self.config_name = config_name
         self.code_path = code_path
+        self.target_directory = target_directory
         self.install_called = False
+        self.initialized = False
 
     def install(self) -> None:
         self.install_called = True
 
     async def install_async(self) -> None:
         self.install_called = True
+
+    async def initialize(self) -> None:
+        self.initialized = True
 
 
 def _import_extension_manager(monkeypatch: pytest.MonkeyPatch):
@@ -106,8 +113,14 @@ def test_cli_invokes_manager_with_expected_arguments(
     extension_manager = _import_extension_manager(monkeypatch)
     captured: dict[str, object] = {}
 
-    def _factory(config_name: str, code_path: str) -> _ManagerStub:
-        manager = _ManagerStub(config_name=config_name, code_path=code_path)
+    def _factory(
+        config_name: str, code_path: str, target_directory: str = ""
+    ) -> _ManagerStub:
+        manager = _ManagerStub(
+            config_name=config_name,
+            code_path=code_path,
+            target_directory=target_directory,
+        )
         captured["manager"] = manager
         return manager
 
@@ -133,6 +146,8 @@ def test_cli_invokes_manager_with_expected_arguments(
     assert isinstance(manager, _ManagerStub)
     assert manager.config_name == "custom-devcontainer.json"
     assert manager.code_path == "/custom/code"
+    assert manager.target_directory == "/tmp/extensions"
+    assert manager.initialized is True
     assert manager.install_called is True
 
 

@@ -27,7 +27,7 @@ class CodeAPIManager(object):
 
     session: requests.Session
 
-    def get_vscode_extension(
+    def _get_vscode_extension_sync(
         self,
         extension_id: str = "",
         max_page: int = 100,
@@ -149,7 +149,7 @@ class CodeAPIManager(object):
             if len(extensions) != page_size:
                 break
 
-    def get_extension_metadata(
+    def _get_extension_metadata_sync(
         self,
         extension_id: str,
         include_latest_version_only: bool = False,
@@ -157,7 +157,7 @@ class CodeAPIManager(object):
     ) -> dict[str, list[dict[str, Any]]]:
         extensions = {}
         logger.info(f"Obtaining metadata for {extension_id}")
-        for extension in self.get_vscode_extension(
+        for extension in self._get_vscode_extension_sync(
             extension_id=extension_id,
             include_latest_version_only=include_latest_version_only,
         ):
@@ -272,7 +272,7 @@ class CodeAPIManager(object):
             extensions[extension_id] = result
         return extensions
 
-    async def get_vscode_extension_async(
+    async def get_vscode_extension(
         self,
         extension_id: str = "",
         max_page: int = 100,
@@ -294,7 +294,7 @@ class CodeAPIManager(object):
         """Asynchronously fetch extension search results."""
         return await asyncio.to_thread(
             lambda: list(
-                self.get_vscode_extension(
+                self._get_vscode_extension_sync(
                     extension_id=extension_id,
                     max_page=max_page,
                     page_size=page_size,
@@ -315,7 +315,7 @@ class CodeAPIManager(object):
             )
         )
 
-    async def get_extension_metadata_async(
+    async def get_extension_metadata(
         self,
         extension_id: str,
         include_latest_version_only: bool = False,
@@ -323,7 +323,7 @@ class CodeAPIManager(object):
     ) -> dict[str, list[dict[str, Any]]]:
         """Asynchronously fetch metadata for one extension."""
         return await asyncio.to_thread(
-            self.get_extension_metadata,
+            self._get_extension_metadata_sync,
             extension_id,
             include_latest_version_only,
             include_latest_stable_version_only,

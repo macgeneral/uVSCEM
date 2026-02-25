@@ -2,8 +2,7 @@
   "image": "mcr.microsoft.com/devcontainers/python:3.10-bookworm",
   "mounts": [
     "source=/${localWorkspaceFolder}/.devcontainer/cache,target=/home/vscode/cache,type=bind,consistency=cached",
-    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=/home/vscode/devcontainer.json,type=bind,consistency=cached",
-    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=/workspaces/uVSCEM/devcontainer.json,type=bind,consistency=cached"
+    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=${containerWorkspaceFolder}/devcontainer.json,type=bind,consistency=cached"
   ],
   "customizations": {
     "vscode": {
@@ -40,5 +39,5 @@
   "runArgs": [
     "--add-host=localproxy:host-gateway"
   ],
-  "postAttachCommand": "uv sync --group dev && uv run uvscem --config-name ${HOME}/devcontainer.json"
+  "postAttachCommand": "pip install --upgrade uv && uv sync --group dev && uv run uvscem --config-name ${HOME}/devcontainer.json"
 }

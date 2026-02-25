@@ -58,4 +58,4 @@ python-version = "3.10"
 all = "error"
 
 [tool.pytest.ini_options]
-addopts = "--cov=src/uvscem --cov-branch --cov-report=term-missing:skip-covered"
+addopts = "-x --cov=src/uvscem --cov-branch --cov-fail-under=100 --cov-report=term-missing:skip-covered"
