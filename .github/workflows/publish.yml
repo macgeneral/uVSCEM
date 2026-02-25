@@ -67,54 +67,55 @@ jobs:
             exit 1
           fi
 
-      - name: Import tag signing key from GitHub API
+      - name: Verify tag signature
         env:
-          EXPECTED_SIGNER_GITHUB_LOGIN: ${{ vars.PYPI_TAG_SIGNER_GITHUB_LOGIN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
         run: |
-          if [[ -z "${EXPECTED_SIGNER_GITHUB_LOGIN}" ]]; then
-            echo "Missing required variable: PYPI_TAG_SIGNER_GITHUB_LOGIN"
-            exit 1
-          fi
-
           python - <<'PY'
           import json
           import os
           import urllib.request
 
-          login = os.environ["EXPECTED_SIGNER_GITHUB_LOGIN"]
-          req = urllib.request.Request(
-              f"https://api.github.com/users/{login}/gpg_keys",
-              headers={"Accept": "application/vnd.github+json", "User-Agent": "uvscem-publish"},
-          )
+          token = os.environ["GH_TOKEN"]
+          repo = "${{ github.repository }}"
+          tag = os.environ["RELEASE_TAG"]
 
-          with urllib.request.urlopen(req) as resp:
-              payload = json.load(resp)
+          def api_get(url):
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "User-Agent": "uvscem-publish",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(req) as resp:
+                  return json.load(resp)
 
-          keys = [item.get("armored_public_key", "") for item in payload]
-          keys = [key for key in keys if key]
-          if not keys:
-              raise SystemExit(f"No public GPG keys found for GitHub user: {login}")
+          ref_data = api_get(f"https://api.github.com/repos/{repo}/git/refs/tags/{tag}")
+          obj = ref_data["object"]
 
-          with open("/tmp/tag-signer-keys.asc", "w", encoding="utf-8") as output:
-              output.write("\n".join(keys))
-              output.write("\n")
+          if obj["type"] != "tag":
+              raise SystemExit(
+                  f"Tag {tag!r} is not an annotated tag (type={obj['type']!r}). "
+                  "Only signed annotated tags are accepted for publishing."
+              )
+
+          tag_data = api_get(f"https://api.github.com/repos/{repo}/git/tags/{obj['sha']}")
+          verification = tag_data.get("verification", {})
+          verified = verification.get("verified", False)
+          reason = verification.get("reason", "unknown")
+
+          if not verified:
+              raise SystemExit(
+                  f"Tag {tag!r} signature verification failed (reason={reason!r}). "
+                  "Ensure the tag is signed with a GPG key registered on GitHub."
+              )
+
+          print(f"Tag {tag!r} signature verified by GitHub (reason={reason!r}).")
           PY
-
-          gpg --batch --import /tmp/tag-signer-keys.asc
-
-      - name: Verify tag signature
-        env:
-          EXPECTED_SIGNER: ${{ vars.PYPI_TAG_SIGNER }}
-        run: |
-          RELEASE_TAG="${{ needs.check.outputs.release_tag }}"
-          VERIFY_OUTPUT="$(git tag -v "${RELEASE_TAG}" 2>&1)"
-          echo "${VERIFY_OUTPUT}"
-
-          echo "${VERIFY_OUTPUT}" | grep -q "Good signature from"
-
-          if [[ -n "${EXPECTED_SIGNER}" ]]; then
-            echo "${VERIFY_OUTPUT}" | grep -Fq "${EXPECTED_SIGNER}"
-          fi
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
