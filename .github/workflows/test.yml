@@ -90,13 +90,13 @@ jobs:
         if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
         env:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
-        run: uv run pytest --slow --no-cov
+        run: uv run pytest src --slow --no-cov
 
       - name: Integration tests (full failure report)
         if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
         env:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
-        run: uv run pytest --slow --no-cov --maxfail=0
+        run: uv run pytest src --slow --no-cov --maxfail=0
 
   upload-coverage:
     needs: tests
@@ -106,6 +106,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: codecov
     steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Download coverage artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:

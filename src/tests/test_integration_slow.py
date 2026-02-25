@@ -14,6 +14,7 @@ import requests
 
 import uvscem.code_manager as code_manager_module
 import uvscem.extension_manager as extension_manager_module
+from uvscem.exceptions import OfflineBundleExportError
 from uvscem.extension_manager import CodeExtensionManager
 from uvscem.vsce_sign_bootstrap import provision_vsce_sign_binary_for_run
 
@@ -329,12 +330,22 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     monkeypatch.setattr(extension_manager_module, "vscode_root", sandbox_vscode_root)
     ordered_extensions: list[str] = []
     try:
-        extension_manager_module.export_offline_bundle(
-            config_name=str(config_path),
-            bundle_path=str(bundle_path),
-            target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
-            code_path=code_binary or "code",
-        )
+        try:
+            extension_manager_module.export_offline_bundle(
+                config_name=str(config_path),
+                bundle_path=str(bundle_path),
+                target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
+                code_path=code_binary or "code",
+            )
+        except OfflineBundleExportError as exc:
+            cause = exc.__cause__
+            if (
+                isinstance(cause, requests.exceptions.HTTPError)
+                and cause.response is not None
+                and cause.response.status_code in (403, 404)
+            ):
+                pytest.skip(f"vsce-sign binary unavailable from npm registry: {cause}")
+            raise
 
         manifest = json.loads(
             (bundle_path / "manifest.json").read_text(encoding="utf-8")
