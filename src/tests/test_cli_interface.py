@@ -16,6 +16,9 @@ class _ManagerStub:
     def install(self) -> None:
         self.install_called = True
 
+    async def install_async(self) -> None:
+        self.install_called = True
+
 
 def _import_extension_manager(monkeypatch: pytest.MonkeyPatch):
     if "json5" not in sys.modules:

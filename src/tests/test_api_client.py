@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from uvscem.api_client import CodeAPIManager
@@ -53,6 +54,82 @@ def test_get_vscode_extension_handles_pagination_and_flags() -> None:
     assert calls[0]["json"]["flags"] == (
         0x1 | 0x2 | 0x8 | 0x10 | 0x40 | 0x100 | 0x200 | 0x1000 | 0x8000
     )
+
+
+def test_get_vscode_extension_supports_minimal_flag_set() -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+    calls: list[dict] = []
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"results": [{"extensions": []}]}
+
+    manager.session = SimpleNamespace(
+        post=lambda url, json, headers: (
+            calls.append({"url": url, "json": json, "headers": headers}) or _Response()
+        )
+    )
+
+    result = list(
+        manager.get_vscode_extension(
+            extension_id="publisher.name",
+            max_page=1,
+            page_size=10,
+            include_versions=False,
+            include_files=False,
+            include_category_and_tags=False,
+            include_shared_accounts=False,
+            include_version_properties=False,
+            exclude_non_validated=False,
+            include_installation_targets=False,
+            include_asset_uri=False,
+            include_statistics=False,
+            include_latest_version_only=False,
+            unpublished=False,
+            include_name_conflict_info=False,
+            api_version="1.0-preview",
+        )
+    )
+
+    assert result == []
+    assert calls[0]["json"]["flags"] == 0
+    assert calls[0]["headers"]["Accept"].endswith("api-version=1.0-preview")
+
+
+def test_get_vscode_extension_covers_additional_flag_paths() -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"results": [{"extensions": []}]}
+
+    manager.session = SimpleNamespace(post=lambda *_args, **_kwargs: _Response())
+
+    result = list(
+        manager.get_vscode_extension(
+            max_page=0,
+            include_versions=False,
+            include_files=False,
+            include_category_and_tags=True,
+            include_shared_accounts=False,
+            include_version_properties=False,
+            exclude_non_validated=True,
+            include_installation_targets=False,
+            include_asset_uri=True,
+            include_statistics=False,
+            include_latest_version_only=False,
+            unpublished=False,
+            include_name_conflict_info=False,
+        )
+    )
+
+    assert result == []
 
 
 def _build_extension_payload() -> dict:
@@ -156,3 +233,32 @@ def test_get_extension_metadata_can_include_prerelease_versions() -> None:
     assert (
         versions[0]["installation_metadata"]["metadata"]["isPreReleaseVersion"] is True
     )
+
+
+def test_get_extension_metadata_handles_extension_without_versions() -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+    manager.get_vscode_extension = lambda **_kwargs: [
+        {
+            "extensionId": "id",
+            "extensionName": "name",
+            "statistics": [],
+            "publisher": {"publisherName": "publisher"},
+            "versions": [],
+        }
+    ]
+
+    result = manager.get_extension_metadata("publisher.name")
+
+    assert result == {"publisher.name": []}
+
+
+def test_async_api_wrappers_delegate_to_sync_methods() -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+    manager.get_vscode_extension = lambda **_kwargs: [{"id": "one"}, {"id": "two"}]
+    manager.get_extension_metadata = lambda *args, **kwargs: {"publisher.name": []}
+
+    extensions = asyncio.run(manager.get_vscode_extension_async(extension_id="publisher.name"))
+    metadata = asyncio.run(manager.get_extension_metadata_async("publisher.name"))
+
+    assert extensions == [{"id": "one"}, {"id": "two"}]
+    assert metadata == {"publisher.name": []}

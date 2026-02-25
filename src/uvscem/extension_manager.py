@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -334,6 +335,100 @@ class CodeExtensionManager(object):
                         f"Skipping {extension} ({extension_version}), already installed."
                     )
 
+    async def parse_all_extensions_async(self) -> list[str]:
+        """Asynchronously parse all extension ids from configuration."""
+        return await asyncio.to_thread(self.parse_all_extensions)
+
+    async def install_async(self) -> None:
+        """Asynchronously install all configured extensions."""
+        await asyncio.to_thread(self.exclude_installed)
+
+        while self.extensions:
+            await self.install_extension_async(self.extensions.pop(0))
+            await asyncio.sleep(1)
+
+    async def download_extension_async(self, extension_id: str) -> Path:
+        """Asynchronously download one extension package."""
+        return await asyncio.to_thread(self.download_extension, extension_id)
+
+    async def install_extension_manually_async(
+        self, extension_id: str, extension_path: Path, update_json: bool = True
+    ) -> None:
+        """Asynchronously install one extension manually from VSIX."""
+        await asyncio.to_thread(
+            self.install_extension_manually, extension_id, extension_path, update_json
+        )
+
+    async def update_extensions_json_async(
+        self, extension_id: str = "", extension_ids: list[str] = []
+    ) -> None:
+        """Asynchronously update VSCode extension metadata json."""
+        await asyncio.to_thread(self.update_extensions_json, extension_id, extension_ids)
+
+    async def install_extension_async(
+        self, extension_id: str, extension_pack: bool = False, retries: int = 0
+    ) -> None:
+        """Asynchronously install a single extension."""
+        file_name = self.get_filename(extension_id)
+        file_path = self.target_path.joinpath(file_name)
+        metadata = self.extension_metadata.get(extension_id, {})
+
+        if file_path.is_file():
+            logger.info(f"File {file_name} exists - skipping download...")
+        else:
+            file_path = await self.download_extension_async(extension_id)
+
+        extension_pack_items = list(metadata.get("extension_pack", []))
+        if extension_pack_items:
+            manually_installed = []
+
+            if not extension_pack:
+                manually_installed.append(extension_id)
+                extension_pack = True
+
+            for ep in extension_pack_items:
+                if ep in self.extensions:
+                    await self.install_extension_async(
+                        self.extensions.pop(self.extensions.index(ep)),
+                        extension_pack=True,
+                    )
+                manually_installed.append(ep)
+
+            await self.update_extensions_json_async(extension_ids=manually_installed)
+
+        if extension_pack:
+            await self.install_extension_manually_async(
+                extension_id, file_path, update_json=False
+            )
+            return
+
+        cmd = [
+            self.code_binary,
+            "--install-extension",
+            f"{file_path}",
+            "--force",
+        ]
+        try:
+            output = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+            error_msg = "Error: "
+            if error_msg in f"{output.stdout}" or error_msg in f"{output.stderr}":
+                raise subprocess.CalledProcessError(1, cmd, output.stdout, output.stderr)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Something went wrong: {e}")
+            await asyncio.to_thread(self.socket_manager.find_socket, True)
+            if retries < max_retries:
+                await self.install_extension_async(
+                    extension_id,
+                    extension_pack=extension_pack,
+                    retries=retries + 1,
+                )
+
 
 def install(
     config_name: str = "devcontainer.json",
@@ -347,7 +442,9 @@ def install(
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
     logger.info("Attempting to install all necessary DevContainer extensions.")
-    CodeExtensionManager(config_name=config_name, code_path=code_path).install()
+    asyncio.run(
+        CodeExtensionManager(config_name=config_name, code_path=code_path).install_async()
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

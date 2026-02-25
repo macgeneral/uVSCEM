@@ -1,6 +1,7 @@
 #! /bin/env python3
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shlex
@@ -126,3 +127,16 @@ class CodeManager(object):
             logger.exception("unexpected exception when checking if a socket is closed")
             return False
         return False
+
+    async def find_socket_async(self, update_environment: bool = False) -> None:
+        """Asynchronously find VSCode Unix sockets."""
+        await asyncio.to_thread(self.find_socket, update_environment)
+
+    async def find_latest_code_async(self, update_environment: bool = False) -> None:
+        """Asynchronously find the latest VSCode remote CLI executable."""
+        await asyncio.to_thread(self.find_latest_code, update_environment)
+
+    async def initialize_async(self) -> None:
+        """Asynchronously initialize socket and CLI discovery."""
+        await self.find_socket_async(update_environment=True)
+        await self.find_latest_code_async(update_environment=True)

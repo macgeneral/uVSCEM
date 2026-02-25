@@ -1,6 +1,7 @@
 #! /bin/env python3
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from pathlib import Path
@@ -270,6 +271,63 @@ class CodeAPIManager(object):
                     break
             extensions[extension_id] = result
         return extensions
+
+    async def get_vscode_extension_async(
+        self,
+        extension_id: str = "",
+        max_page: int = 100,
+        page_size: int = 10,
+        include_versions: bool = True,
+        include_files: bool = True,
+        include_category_and_tags: bool = True,
+        include_shared_accounts: bool = True,
+        include_version_properties: bool = True,
+        exclude_non_validated: bool = False,
+        include_installation_targets: bool = True,
+        include_asset_uri: bool = True,
+        include_statistics: bool = True,
+        include_latest_version_only: bool = False,
+        unpublished: bool = False,
+        include_name_conflict_info: bool = True,
+        api_version: str = "7.2-preview.1",
+    ) -> list[dict[str, Any]]:
+        """Asynchronously fetch extension search results."""
+        return await asyncio.to_thread(
+            lambda: list(
+                self.get_vscode_extension(
+                    extension_id=extension_id,
+                    max_page=max_page,
+                    page_size=page_size,
+                    include_versions=include_versions,
+                    include_files=include_files,
+                    include_category_and_tags=include_category_and_tags,
+                    include_shared_accounts=include_shared_accounts,
+                    include_version_properties=include_version_properties,
+                    exclude_non_validated=exclude_non_validated,
+                    include_installation_targets=include_installation_targets,
+                    include_asset_uri=include_asset_uri,
+                    include_statistics=include_statistics,
+                    include_latest_version_only=include_latest_version_only,
+                    unpublished=unpublished,
+                    include_name_conflict_info=include_name_conflict_info,
+                    api_version=api_version,
+                )
+            )
+        )
+
+    async def get_extension_metadata_async(
+        self,
+        extension_id: str,
+        include_latest_version_only: bool = False,
+        include_latest_stable_version_only: bool = True,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Asynchronously fetch metadata for one extension."""
+        return await asyncio.to_thread(
+            self.get_extension_metadata,
+            extension_id,
+            include_latest_version_only,
+            include_latest_stable_version_only,
+        )
 
     def __init__(self):
         retry_strategy = Retry(

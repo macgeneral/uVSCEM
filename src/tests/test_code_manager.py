@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 import os
 import socket
@@ -9,6 +10,29 @@ import pytest
 
 from uvscem import code_manager
 from uvscem.code_manager import CodeManager
+
+
+def test_init_calls_socket_and_code_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        CodeManager,
+        "find_socket",
+        lambda self, update_environment=False: calls.append(
+            f"socket:{update_environment}"
+        ),
+    )
+    monkeypatch.setattr(
+        CodeManager,
+        "find_latest_code",
+        lambda self, update_environment=False: calls.append(
+            f"code:{update_environment}"
+        ),
+    )
+
+    CodeManager()
+
+    assert calls == ["socket:True", "code:True"]
 
 
 def test_find_socket_removes_stale_and_sets_environment(
@@ -56,6 +80,28 @@ def test_find_socket_without_any_socket_keeps_environment_unchanged(
 
     assert manager.socket_path is None
     assert "VSCODE_IPC_HOOK_CLI" not in os.environ
+
+
+def test_find_socket_keeps_first_active_when_multiple_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "vscode-ipc-aaa.sock"
+    second = tmp_path / "vscode-ipc-bbb.sock"
+    first.write_text("a")
+    second.write_text("b")
+
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        CodeManager, "is_socket_closed", staticmethod(lambda _path: False)
+    )
+
+    manager.find_socket(update_environment=False)
+
+    assert manager.socket_path == first
 
 
 def _write_code_launcher(script_path: Path, version: str, commit: str) -> None:
@@ -110,6 +156,27 @@ def test_find_latest_code_reorders_when_path_has_duplicates(
     assert path_items.count(expected) == 1
 
 
+def test_find_latest_code_without_environment_update_keeps_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vscode"
+    _write_code_launcher(
+        root / "bin" / "commit3" / "bin" / "remote-cli" / "code", "3.0.0", "commit3"
+    )
+
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.setattr(code_manager, "vscode_root", root)
+    monkeypatch.setenv("PATH", "alpha:beta")
+
+    manager.find_latest_code(update_environment=False)
+
+    assert str(manager.code_path).endswith("commit3/bin/remote-cli")
+    assert os.environ["PATH"] == "alpha:beta"
+
+
 def test_find_latest_code_handles_missing_or_invalid_versions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -134,6 +201,26 @@ def test_find_latest_code_handles_missing_or_invalid_versions(
         manager.find_latest_code(update_environment=True)
 
     assert "Unable to determine latest VSCode version" in caplog.text
+
+
+def test_find_latest_code_ignores_launcher_missing_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = tmp_path / "vscode"
+    script = root / "bin" / "commit-x" / "bin" / "remote-cli" / "code"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("VERSION=1.0.0\n")
+
+    manager = CodeManager.__new__(CodeManager)
+    manager.socket_path = None
+    manager.code_path = None
+
+    monkeypatch.setattr(code_manager, "vscode_root", root)
+
+    with caplog.at_level("WARNING"):
+        manager.find_latest_code(update_environment=False)
+
+    assert "No VSCode remote CLI executable found" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -175,3 +262,21 @@ def test_is_socket_closed_returns_false_when_recv_succeeds(
     monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: _FakeSocket())
 
     assert CodeManager.is_socket_closed(Path("/tmp/fake.sock")) is False
+
+
+def test_async_code_manager_wrappers_delegate_to_sync_methods() -> None:
+    manager = CodeManager.__new__(CodeManager)
+    calls: list[str] = []
+
+    manager.find_socket = lambda update_environment=False: calls.append(
+        f"socket:{update_environment}"
+    )
+    manager.find_latest_code = lambda update_environment=False: calls.append(
+        f"code:{update_environment}"
+    )
+
+    asyncio.run(manager.find_socket_async(update_environment=True))
+    asyncio.run(manager.find_latest_code_async(update_environment=False))
+    asyncio.run(manager.initialize_async())
+
+    assert calls == ["socket:True", "code:False", "socket:True", "code:True"]
