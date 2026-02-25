@@ -1,8 +1,9 @@
 {
-  "image": "mcr.microsoft.com/devcontainers/python:3.8-bookworm",
+  "image": "mcr.microsoft.com/devcontainers/python:3.10-bookworm",
   "mounts": [
     "source=/${localWorkspaceFolder}/.devcontainer/cache,target=/home/vscode/cache,type=bind,consistency=cached",
-    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=/home/vscode/devcontainer.json,type=bind,consistency=cached"
+    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=/home/vscode/devcontainer.json,type=bind,consistency=cached",
+    "source=/${localWorkspaceFolder}/.devcontainer/devcontainer.json,target=/workspaces/uVSCEM/devcontainer.json,type=bind,consistency=cached"
   ],
   "customizations": {
     "vscode": {
@@ -15,6 +16,7 @@
   },
   // there's no consistency in proxy variables
   // https://about.gitlab.com/blog/2021/01/27/we-need-to-talk-no-proxy/
+  /*
   "containerEnv": {
     "http_proxy": "http://host.docker.internal:3128",
     "https_proxy": "http://host.docker.internal:3128",
@@ -31,11 +33,12 @@
     "HTTPS_PROXY": "http://host.docker.internal:3128",
     "NO_PROXY": "${localEnv:no_proxy}",
   },
+  */
   // for Cntlm running on localhost you could expose it to both host and container
   // by adding '127.0.0.1   localproxy' to your host's file in /etc/host
   // and configuring your user settings in VSCode to > "http.proxy": "http://localproxy:3128"
   "runArgs": [
     "--add-host=localproxy:host-gateway"
   ],
-  "postAttachCommand": "python3 -m pip install poetry && poetry install && poetry run uvscem --config-name ${HOME}/devcontainer.json"
+  "postAttachCommand": "uv sync --group dev && uv run uvscem --config-name ${HOME}/devcontainer.json"
 }

@@ -9,8 +9,6 @@ import tempfile
 from pathlib import Path
 
 # for parsing devcontainer.json (if it includes comments etc.)
-import typer
-
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
@@ -19,7 +17,6 @@ max_retries = 3
 user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
 # VSCode extension installation directory
 vscode_root: Path = Path.home().joinpath(".vscode-server").absolute()
-app: typer.Typer = typer.Typer()
 logger: logging.Logger = logging.getLogger(__name__)
 
 
@@ -53,7 +50,7 @@ class CodeManager(object):
                     self.socket_path = socket_path
                     no_socket = False
 
-        if update_environment:
+        if update_environment and self.socket_path is not None:
             os.environ["VSCODE_IPC_HOOK_CLI"] = f"{self.socket_path}"
 
     def find_latest_code(self, update_environment: bool = False) -> None:
@@ -70,12 +67,22 @@ class CodeManager(object):
                     for line in sh
                     if "=" in line and not line.startswith("ROOT")
                 )
-                vscode_versions[code_vars.get("VERSION")] = {
-                    "version": code_vars.get("VERSION"),
-                    "commit": code_vars.get("COMMIT"),
-                }
+                version = code_vars.get("VERSION")
+                commit = code_vars.get("COMMIT")
+                if version and commit:
+                    vscode_versions[version] = {
+                        "version": version,
+                        "commit": commit,
+                    }
+
+        if not vscode_versions:
+            logger.warning("No VSCode remote CLI executable found")
+            return
 
         latest_version = vscode_versions.get(max(vscode_versions.keys()))
+        if latest_version is None:
+            logger.warning("Unable to determine latest VSCode version")
+            return
         # VSCode uses symlinks to /vscode/
         self.code_path = (
             vscode_dir.joinpath(f"{latest_version.get('commit')}")
@@ -87,7 +94,7 @@ class CodeManager(object):
             logger.debug(
                 f"Adding Code [{self.code_path}] to $PATH\n  - Version: {latest_version.get('version')} | Commit: {latest_version.get('commit')}"
             )
-            current_path = os.environ.get("PATH")
+            current_path = os.environ.get("PATH", "")
             vscode_path = f"{self.code_path}"
             if vscode_path in current_path:
                 reordered_path = current_path.split(":")

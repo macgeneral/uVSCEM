@@ -1,6 +1,7 @@
 #! /bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -11,11 +12,11 @@ import time
 import zipfile
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 # for parsing devcontainer.json (if it includes comments etc.)
 import json5
 import requests
-import typer
 from dependency_algorithm import Dependencies
 
 from uvscem.api_client import CodeAPIManager
@@ -29,22 +30,21 @@ max_retries = 3
 user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
 # VSCode extension installation directory
 vscode_root: Path = Path.home().joinpath(".vscode-server").absolute()
-app: typer.Typer = typer.Typer()
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 class CodeExtensionManager(object):
     """Proxy aware helper script to install VSCode extensions in a DevContainer."""
 
-    api_manager: CodeAPIManager | None = None
-    socket_manager: CodeManager | None = None
-    code_binary: str | None = None
-    dev_container_config_path: Path | None = None
-    extensions: list = []
-    installed: dict = {}
-    extension_dependencies: dict = defaultdict(set)
-    extension_metadata: dict = {}
-    target_path: Path | None = None
+    api_manager: CodeAPIManager
+    socket_manager: CodeManager
+    code_binary: str
+    dev_container_config_path: Path
+    extensions: list[str]
+    installed: list[dict[str, Any]]
+    extension_dependencies: dict[str, set[str]]
+    extension_metadata: dict[str, dict[str, Any]]
+    target_path: Path
 
     def __init__(
         self,
@@ -53,6 +53,8 @@ class CodeExtensionManager(object):
         target_directory: str = "",
     ) -> None:
         """Set up the CodeExtensionManager."""
+        self.extension_dependencies = defaultdict(set)
+        self.extension_metadata = {}
         self.api_manager = CodeAPIManager()
         self.socket_manager = CodeManager()
         self.code_binary = code_path
@@ -75,7 +77,7 @@ class CodeExtensionManager(object):
         # create target directory if necessary
         self.target_path.mkdir(parents=True, exist_ok=True)
 
-    def sanitize_dependencies(self, extensions: list) -> list:
+    def sanitize_dependencies(self, extensions: list[str]) -> list[str]:
         """
         Remove VSCode internal extensions which are not available
         on the Marketplace, but still are listed as dependency.
@@ -88,32 +90,41 @@ class CodeExtensionManager(object):
 
         return sanitized
 
-    def add_missing_dependency(self, extensions: list, dependencies: list) -> None:
+    def add_missing_dependency(
+        self, extensions: list[str], dependencies: list[str]
+    ) -> None:
         for dependency in dependencies:
             if dependency not in extensions:
                 extensions.append(dependency)
 
-    def parse_all_extensions(self) -> list:
+    def parse_all_extensions(self) -> list[str]:
         # use json5 for parsing json files that may contain comments
-        extensions: list = list(
-            json5.loads(self.dev_container_config_path.read_text())
-            .get("customizations")
-            .get("vscode")
-            .get("extensions")
+        parsed_config: dict[str, Any] = json5.loads(
+            self.dev_container_config_path.read_text()
+        )
+        extensions: list[str] = list(
+            parsed_config.get("customizations", {})
+            .get("vscode", {})
+            .get("extensions", [])
         )
 
         for extension_id in extensions:
             metadata = self.api_manager.get_extension_metadata(extension_id)
             # only store the results for the latest version
-            metadata = metadata.get(extension_id)[0]
+            versions = metadata.get(extension_id, [])
+            if not versions:
+                continue
+            metadata = versions[0]
             self.extension_metadata[extension_id] = metadata
 
-            dependencies = self.sanitize_dependencies(metadata.get("dependencies"))
+            dependencies = self.sanitize_dependencies(metadata.get("dependencies", []))
             self.extension_dependencies[extension_id].update(dependencies)
             self.add_missing_dependency(extensions, dependencies)
 
             # dont treat extension packs as dependencies
-            extension_pack = self.sanitize_dependencies(metadata.get("extension_pack"))
+            extension_pack = self.sanitize_dependencies(
+                metadata.get("extension_pack", [])
+            )
             self.add_missing_dependency(extensions, extension_pack)
 
         # get installation order
@@ -130,7 +141,9 @@ class CodeExtensionManager(object):
             time.sleep(1)
 
     def get_dirname(self, extension_id: str) -> str:
-        version: str = self.extension_metadata.get(extension_id, {}).get("version")
+        version: str = str(
+            self.extension_metadata.get(extension_id, {}).get("version", "")
+        )
         return f"{extension_id}-{version}"
 
     def get_filename(self, extension_id: str) -> str:
@@ -139,7 +152,9 @@ class CodeExtensionManager(object):
     def download_extension(self, extension_id: str) -> Path:
         """Download an extension and return the downloaded file's path."""
         metadata: dict = self.extension_metadata.get(extension_id, {})
-        url: str = metadata.get("url")
+        url: str = str(metadata.get("url", ""))
+        if not url:
+            raise ValueError(f"Missing download URL for extension: {extension_id}")
         headers: dict = {
             "User-Agent": user_agent,
         }
@@ -149,7 +164,7 @@ class CodeExtensionManager(object):
 
             with open(file_path, "wb") as f:
                 logger.info(f"Installing {extension_id} from {url}")
-                response: requests.request = self.api_manager.session.get(
+                response: requests.Response = self.api_manager.session.get(
                     url, stream=True, headers=headers
                 )
                 response.raise_for_status()
@@ -191,7 +206,9 @@ class CodeExtensionManager(object):
         if update_json:
             self.update_extensions_json(extension_id=extension_id)
 
-    def update_extensions_json(self, extension_id: str = "", extension_ids: list = []):
+    def update_extensions_json(
+        self, extension_id: str = "", extension_ids: list[str] = []
+    ):
         self.installed = self.find_installed()
 
         if extension_id:
@@ -199,9 +216,11 @@ class CodeExtensionManager(object):
 
         for eid in extension_ids:
             # TODO: parse and update contents!
-            self.installed.append(
-                self.extension_metadata.get(eid).get("installation_metadata")
+            installation_metadata = self.extension_metadata.get(eid, {}).get(
+                "installation_metadata"
             )
+            if installation_metadata:
+                self.installed.append(installation_metadata)
 
         json_path: Path = self.extensions_json_path()
         backup_path: Path = json_path.rename(f"{json_path}.bak")
@@ -221,7 +240,7 @@ class CodeExtensionManager(object):
         """Install a single extension."""
         file_name = self.get_filename(extension_id)
         file_path = self.target_path.joinpath(file_name)
-        metadata = self.extension_metadata.get(extension_id)
+        metadata = self.extension_metadata.get(extension_id, {})
 
         if file_path.is_file():
             logger.info(f"File {file_name} exists - skipping download...")
@@ -229,7 +248,8 @@ class CodeExtensionManager(object):
             file_path = self.download_extension(extension_id)
 
         # installing extension packs doesn't work because the code install routine tries fetching other packages itself
-        if metadata.get("extension_pack"):
+        extension_pack_items = list(metadata.get("extension_pack", []))
+        if extension_pack_items:
             manually_installed = []
 
             if not extension_pack:
@@ -237,10 +257,12 @@ class CodeExtensionManager(object):
                 extension_pack = True
 
             # also repeat this step for the packages listed in extension pack
-            for ep in metadata.get("extension_pack"):
-                self.install_extension(
-                    self.extensions.pop(self.extensions.index(ep)), extension_pack=True
-                )
+            for ep in extension_pack_items:
+                if ep in self.extensions:
+                    self.install_extension(
+                        self.extensions.pop(self.extensions.index(ep)),
+                        extension_pack=True,
+                    )
                 manually_installed.append(ep)
 
             self.update_extensions_json(extension_ids=manually_installed)
@@ -262,6 +284,7 @@ class CodeExtensionManager(object):
                     cmd,
                     capture_output=True,
                     check=True,
+                    text=True,
                 )
                 # catch some weird code errors
                 error_msg = "Error: "
@@ -278,10 +301,10 @@ class CodeExtensionManager(object):
                         extension_id, extension_pack=extension_pack, retries=retries
                     )
 
-    def find_installed(self) -> dict:
+    def find_installed(self) -> list[dict[str, Any]]:
         """Return a list of already installed extensions."""
         extensions_path: Path = self.extensions_json_path()
-        extensions: dict = {}
+        extensions: list[dict[str, Any]] = []
         with open(extensions_path, "r") as f:
             extensions = json.load(f)
 
@@ -294,13 +317,13 @@ class CodeExtensionManager(object):
         """Remove all already installed extensions from the extensions list."""
         for installed_extension in self.installed:
             for extension in self.extensions:
-                installed_version: str = installed_extension.get("version")
-                installed_name: str = (
-                    installed_extension.get("identifier").get("id").lower()
-                )
+                installed_version: str = str(installed_extension.get("version", ""))
+                installed_name: str = str(
+                    installed_extension.get("identifier", {}).get("id", "")
+                ).lower()
                 extension_name: str = extension.lower()
-                extension_version: str = self.extension_metadata.get(extension).get(
-                    "version"
+                extension_version: str = str(
+                    self.extension_metadata.get(extension, {}).get("version", "")
                 )
                 if (
                     extension_name == installed_name
@@ -312,7 +335,6 @@ class CodeExtensionManager(object):
                     )
 
 
-@app.command()
 def install(
     config_name: str = "devcontainer.json",
     code_path: str = "code",
@@ -328,8 +350,31 @@ def install(
     CodeExtensionManager(config_name=config_name, code_path=code_path).install()
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Create CLI parser while keeping existing install option names."""
+    parser = argparse.ArgumentParser(prog="uvscem")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="install",
+        choices=["install"],
+    )
+    parser.add_argument("--config-name", default="devcontainer.json")
+    parser.add_argument("--code-path", default="code")
+    parser.add_argument("--target-path", default="$HOME/cache/.vscode/extensions")
+    parser.add_argument("--log-level", default="info")
+    return parser
+
+
 def main() -> None:
-    app()
+    parser = build_parser()
+    args = parser.parse_args()
+    install(
+        config_name=args.config_name,
+        code_path=args.code_path,
+        target_path=args.target_path,
+        log_level=args.log_level,
+    )
 
 
 if __name__ == "__main__":

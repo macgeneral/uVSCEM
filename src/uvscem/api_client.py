@@ -4,10 +4,10 @@ from __future__ import annotations
 import datetime
 import logging
 from pathlib import Path
+from typing import Any
 
 # for parsing devcontainer.json (if it includes comments etc.)
 import requests
-import typer
 from requests.adapters import HTTPAdapter, Retry
 
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
@@ -18,14 +18,13 @@ max_retries = 3
 user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
 # VSCode extension installation directory
 vscode_root: Path = Path.home().joinpath(".vscode-server").absolute()
-app: typer.Typer = typer.Typer()
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 class CodeAPIManager(object):
     """Directly obtain all relevant information from the VSCode Marketplace API."""
 
-    session: requests.Session | None = None
+    session: requests.Session
 
     def get_vscode_extension(
         self,
@@ -45,7 +44,7 @@ class CodeAPIManager(object):
         unpublished: bool = False,
         include_name_conflict_info: bool = True,
         api_version="7.2-preview.1",
-    ):
+    ) -> Any:
         headers = {
             "Accept": f"application/json; charset=utf-8; api-version={api_version}"
         }
@@ -154,7 +153,7 @@ class CodeAPIManager(object):
         extension_id: str,
         include_latest_version_only: bool = False,
         include_latest_stable_version_only: bool = True,
-    ) -> dict:
+    ) -> dict[str, list[dict[str, Any]]]:
         extensions = {}
         logger.info(f"Obtaining metadata for {extension_id}")
         for extension in self.get_vscode_extension(
@@ -162,20 +161,20 @@ class CodeAPIManager(object):
             include_latest_version_only=include_latest_version_only,
         ):
             result: list = []
-            extension_name: str = extension.get("extensionName")
-            extensions_versions: list = extension.get("versions")
+            extension_name: str = str(extension.get("extensionName", ""))
+            extensions_versions: list = list(extension.get("versions", []))
             extensions_statistics: dict = dict(
                 {
                     (item.get("statisticName"), item.get("value"))
                     for item in extension["statistics"]
                 }
             )
-            extension_publisher_username: str = extension.get("publisher").get(
-                "publisherName"
+            extension_publisher_username: str = str(
+                extension.get("publisher", {}).get("publisherName", "")
             )
 
             for extension_version_info in extensions_versions:
-                extension_version: str = extension_version_info.get("version")
+                extension_version: str = str(extension_version_info.get("version", ""))
                 extension_properties: dict = dict(
                     {
                         (item.get("key"), item.get("value"))
@@ -184,15 +183,19 @@ class CodeAPIManager(object):
                 )
                 extension_dependencies: list = [
                     x
-                    for x in extension_properties.get(
-                        "Microsoft.VisualStudio.Code.ExtensionDependencies"
+                    for x in str(
+                        extension_properties.get(
+                            "Microsoft.VisualStudio.Code.ExtensionDependencies", ""
+                        )
                     ).split(",")
                     if x
                 ]
                 extension_packs: list = [
                     x
-                    for x in extension_properties.get(
-                        "Microsoft.VisualStudio.Code.ExtensionPack"
+                    for x in str(
+                        extension_properties.get(
+                            "Microsoft.VisualStudio.Code.ExtensionPack", ""
+                        )
                     ).split(",")
                     if x
                 ]
@@ -202,8 +205,15 @@ class CodeAPIManager(object):
                         for item in extension_version_info.get("files")
                     }
                 )
-                extension_download_url: str = extension_files.get(
-                    "Microsoft.VisualStudio.Services.VSIXPackage"
+                extension_download_url: str = str(
+                    extension_files.get(
+                        "Microsoft.VisualStudio.Services.VSIXPackage", ""
+                    )
+                )
+                extension_signature: str = str(
+                    extension_files.get(
+                        "Microsoft.VisualStudio.Services.VsixSignature", ""
+                    )
                 )
                 is_pre_release: bool = extension_properties.get(
                     "Microsoft.VisualStudio.Code.PreRelease", False
@@ -223,6 +233,7 @@ class CodeAPIManager(object):
                         "dependencies": extension_dependencies,
                         "extension_pack": extension_packs,
                         "url": extension_download_url,
+                        "signature": extension_signature,
                         "statistics": extensions_statistics,
                         "installation_metadata": {
                             "identifier": {"id": extension_id},

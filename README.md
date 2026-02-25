@@ -32,7 +32,15 @@ In your [`devcontainer.json`][devcontainer]
 uVSCEM will then install (and update) all extensions listed in `devcontainer.json` each time Visual Studio Code or the DevContainer is (re)started or rebuild.
 
 **Note**  
-Ensure that your `Dockerfile` (or container) contains Python 3.8 or later and [pip](https://pip.pypa.io/en/stable/), [poetry](https://python-poetry.org), or [pipx](https://pipx.pypa.io/latest/) to install this package. Also, confirm that your `PATH` variable includes the (virtual) environment where the package was installed into (or use `poetry run uvscem` after installing it with poetry).
+Ensure that your `Dockerfile` (or container) contains Python 3.10 or later and [pip](https://pip.pypa.io/en/stable/), [uv](https://docs.astral.sh/uv/), or [pipx](https://pipx.pypa.io/latest/) to install this package. Also, confirm that your `PATH` variable includes the (virtual) environment where the package was installed into (or use `uv run uvscem` inside the project after `uv sync`).
+
+## Development
+
+```bash
+uv sync --group dev
+uv run ruff check .
+uv run ty check
+```
 
 If you have a proxy (e.g. [Cntlm](https://cntlm.sourceforge.net)) listening on `localhost` it's best to add a line in your `/etc/hosts` or `C:\Windows\system32\drivers\etc\hosts` file (if you have the required admin permissions to do so):
 ```
