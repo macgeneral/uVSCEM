@@ -53,6 +53,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-
 
+      - name: Cache integration test artifacts
+        if: runner.os == 'Linux'
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .tmp/uvscem-test-artifacts
+          key: ${{ runner.os }}-integration-artifacts-${{ hashFiles('src/tests/assets/test_extensions.json', 'pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-integration-artifacts-
+
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
@@ -66,8 +75,12 @@ jobs:
 
       - name: Integration tests
         if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
+        env:
+          UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
         run: uv run pytest src --slow --no-cov
 
       - name: Integration tests (full failure report)
         if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch'
+        env:
+          UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
         run: uv run pytest src --slow --no-cov --maxfail=0

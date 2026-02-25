@@ -368,6 +368,32 @@ def test_download_extension_fails_without_url(
         asyncio.run(bare_manager.download_extension("pub.ext"))
 
 
+def test_download_extension_reuses_cached_file(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "url": "https://download/file.vsix"}
+    }
+    cached_path = bare_manager.target_path / bare_manager.get_filename("pub.ext")
+    cached_path.write_bytes(b"cached")
+
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(
+                get=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("network should not be called when cache exists")
+                )
+            )
+        ),
+    )
+
+    downloaded = asyncio.run(bare_manager.download_extension("pub.ext"))
+
+    assert downloaded == cached_path
+    assert downloaded.read_bytes() == b"cached"
+
+
 def test_download_signature_archive_writes_and_moves_file(
     bare_manager: CodeExtensionManager,
 ) -> None:
@@ -405,6 +431,34 @@ def test_download_signature_archive_fails_without_url(
 
     with pytest.raises(ValueError):
         asyncio.run(bare_manager.download_signature_archive("pub.ext"))
+
+
+def test_download_signature_archive_reuses_cached_file(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "signature": "https://download/file.sigzip"}
+    }
+    cached_path = bare_manager.target_path / bare_manager.get_signature_filename(
+        "pub.ext"
+    )
+    cached_path.write_bytes(b"cached-signature")
+
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(
+                get=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("network should not be called when cache exists")
+                )
+            )
+        ),
+    )
+
+    downloaded = asyncio.run(bare_manager.download_signature_archive("pub.ext"))
+
+    assert downloaded == cached_path
+    assert downloaded.read_bytes() == b"cached-signature"
 
 
 def test_verify_extension_signature_runs_vsce_sign(

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import sys
+import tempfile
 import types
+from pathlib import Path
 
 import pytest
 
@@ -112,6 +114,7 @@ def test_cli_invokes_manager_with_expected_arguments(
 ) -> None:
     extension_manager = _import_extension_manager(monkeypatch)
     captured: dict[str, object] = {}
+    target_path = str(Path(tempfile.gettempdir()) / "extensions")
 
     def _factory(
         config_name: str, code_path: str, target_directory: str = ""
@@ -134,7 +137,7 @@ def test_cli_invokes_manager_with_expected_arguments(
             "--code-path",
             "/custom/code",
             "--target-path",
-            "/tmp/extensions",
+            target_path,
             "--log-level",
             "info",
         ],
@@ -146,7 +149,7 @@ def test_cli_invokes_manager_with_expected_arguments(
     assert isinstance(manager, _ManagerStub)
     assert manager.config_name == "custom-devcontainer.json"
     assert manager.code_path == "/custom/code"
-    assert manager.target_directory == "/tmp/extensions"
+    assert manager.target_directory == target_path
     assert manager.initialized is True
     assert manager.install_called is True
 

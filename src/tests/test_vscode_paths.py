@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,9 @@ def test_detect_runtime_environment_uses_vscode_agent_folder(
     _home: Path,
 ) -> None:
     monkeypatch.delenv("UVSCEM_RUNTIME", raising=False)
-    monkeypatch.setenv("VSCODE_AGENT_FOLDER", "/tmp/vscode-agent")
+    monkeypatch.setenv(
+        "VSCODE_AGENT_FOLDER", str(Path(tempfile.gettempdir()) / "vscode-agent")
+    )
 
     assert vscode_paths.detect_runtime_environment() == "vscode-remote"
 
@@ -66,18 +69,20 @@ def test_detect_runtime_environment_defaults_to_local(
 def test_resolve_vscode_root_uses_explicit_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("UVSCEM_VSCODE_ROOT", "/tmp/custom-vscode")
+    custom_root = Path(tempfile.gettempdir()) / "custom-vscode"
+    monkeypatch.setenv("UVSCEM_VSCODE_ROOT", str(custom_root))
 
-    assert vscode_paths.resolve_vscode_root() == Path("/tmp/custom-vscode")
+    assert vscode_paths.resolve_vscode_root() == custom_root.resolve()
 
 
 def test_resolve_vscode_root_uses_vscode_agent_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("UVSCEM_VSCODE_ROOT", raising=False)
-    monkeypatch.setenv("VSCODE_AGENT_FOLDER", "/tmp/vscode-agent")
+    agent_root = Path(tempfile.gettempdir()) / "vscode-agent"
+    monkeypatch.setenv("VSCODE_AGENT_FOLDER", str(agent_root))
 
-    assert vscode_paths.resolve_vscode_root() == Path("/tmp/vscode-agent")
+    assert vscode_paths.resolve_vscode_root() == agent_root.resolve()
 
 
 def test_resolve_vscode_root_uses_runtime_environment(

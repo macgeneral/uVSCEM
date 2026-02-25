@@ -132,6 +132,12 @@ class CodeManager(object):
     @staticmethod
     def is_socket_closed(socket_path: Path) -> bool:
         """Detect if the socket is still usable because VSCode doesn't clean up old sockets."""
+        if not all(
+            hasattr(socket, attr) for attr in ("AF_UNIX", "MSG_DONTWAIT", "MSG_PEEK")
+        ):
+            return False
+
+        client: socket.socket | None = None
         try:
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             # Connect to the server
@@ -147,6 +153,10 @@ class CodeManager(object):
         except Exception:
             logger.exception("unexpected exception when checking if a socket is closed")
             return False
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
         return False
 
     async def find_socket(self, update_environment: bool = False) -> None:

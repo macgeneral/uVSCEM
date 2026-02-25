@@ -4,6 +4,7 @@ import asyncio
 import builtins
 import os
 import socket
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -76,11 +77,12 @@ def test_find_socket_uses_existing_hook_when_present(
     manager.socket_path = None
     manager.code_path = None
 
-    monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", "/tmp/vscode-existing.sock")
+    existing_hook = str(Path(tempfile.gettempdir()) / "vscode-existing.sock")
+    monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", existing_hook)
     asyncio.run(manager.find_socket(update_environment=True))
 
-    assert manager.socket_path == Path("/tmp/vscode-existing.sock")
-    assert os.environ["VSCODE_IPC_HOOK_CLI"] == "/tmp/vscode-existing.sock"
+    assert manager.socket_path == Path(existing_hook)
+    assert os.environ["VSCODE_IPC_HOOK_CLI"] == existing_hook
 
 
 def test_find_socket_uses_existing_hook_without_environment_update(
@@ -90,10 +92,11 @@ def test_find_socket_uses_existing_hook_without_environment_update(
     manager.socket_path = None
     manager.code_path = None
 
-    monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", "/tmp/vscode-existing.sock")
+    existing_hook = str(Path(tempfile.gettempdir()) / "vscode-existing.sock")
+    monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", existing_hook)
     asyncio.run(manager.find_socket(update_environment=False))
 
-    assert manager.socket_path == Path("/tmp/vscode-existing.sock")
+    assert manager.socket_path == Path(existing_hook)
 
 
 def test_find_socket_windows_without_hook_returns_early(
@@ -166,7 +169,7 @@ def test_find_latest_code_updates_path(
 
     expected = str(root / "bin" / "commit2" / "bin" / "remote-cli")
     assert str(manager.code_path) == expected
-    assert os.environ["PATH"].split(":")[0] == expected
+    assert os.environ["PATH"].split(os.pathsep)[0] == expected
 
 
 def test_find_latest_code_reorders_when_path_has_duplicates(
@@ -192,7 +195,7 @@ def test_find_latest_code_reorders_when_path_has_duplicates(
     manager.code_path = None
     asyncio.run(manager.find_latest_code(update_environment=True))
 
-    path_items = os.environ["PATH"].split(":")
+    path_items = os.environ["PATH"].split(os.pathsep)
     assert path_items[0] == expected
     assert path_items.count(expected) == 1
 
@@ -213,12 +216,13 @@ def test_find_latest_code_without_environment_update_keeps_path(
     monkeypatch.setattr(
         code_manager, "detect_runtime_environment", lambda: "vscode-server"
     )
-    monkeypatch.setenv("PATH", f"alpha{os.pathsep}beta")
+    original_path = f"alpha{os.pathsep}beta"
+    monkeypatch.setenv("PATH", original_path)
 
     asyncio.run(manager.find_latest_code(update_environment=False))
 
     assert str(manager.code_path).endswith("commit3/bin/remote-cli")
-    assert os.environ["PATH"] == "alpha:beta"
+    assert os.environ["PATH"] == original_path
 
 
 def test_find_latest_code_handles_missing_or_invalid_versions(
@@ -288,18 +292,19 @@ def test_find_latest_code_falls_back_to_local_cli(
     manager = CodeManager.__new__(CodeManager)
     manager.socket_path = None
     manager.code_path = None
+    temp_dir = Path(tempfile.gettempdir())
 
     monkeypatch.setattr(code_manager, "detect_runtime_environment", lambda: "local")
     monkeypatch.setattr(
         code_manager.shutil,
         "which",
-        lambda name: "/tmp/code" if name == "code" else None,
+        lambda name: str(temp_dir / "code") if name == "code" else None,
     )
     monkeypatch.setenv("PATH", "")
 
     asyncio.run(manager.find_latest_code(update_environment=True))
 
-    expected_path = Path("/tmp").resolve()
+    expected_path = temp_dir.resolve()
     assert manager.code_path == expected_path
     assert Path(os.environ["PATH"].split(os.pathsep)[0]).resolve() == expected_path
 
@@ -327,7 +332,10 @@ def test_is_socket_closed_branches(
 
     monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: _FakeSocket())
 
-    assert CodeManager.is_socket_closed(Path("/tmp/fake.sock")) is expected
+    assert (
+        CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock")
+        is expected
+    )
 
 
 def test_is_socket_closed_returns_false_when_recv_succeeds(
@@ -342,7 +350,76 @@ def test_is_socket_closed_returns_false_when_recv_succeeds(
 
     monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: _FakeSocket())
 
-    assert CodeManager.is_socket_closed(Path("/tmp/fake.sock")) is False
+    assert (
+        CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock") is False
+    )
+
+
+def test_is_socket_closed_returns_false_when_unix_socket_capabilities_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(socket, "AF_UNIX")
+
+    assert (
+        CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock") is False
+    )
+
+
+def test_is_socket_closed_closes_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def connect(self, _value: str) -> None:
+            return None
+
+        def recv(self, _size: int, _flags: int) -> None:
+            raise ConnectionRefusedError()
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_socket = _FakeSocket()
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: fake_socket)
+
+    assert (
+        CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock") is True
+    )
+    assert fake_socket.closed is True
+
+
+def test_is_socket_closed_handles_non_callable_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSocket:
+        close = None
+
+        def connect(self, _value: str) -> None:
+            return None
+
+        def recv(self, _size: int, _flags: int) -> None:
+            raise ConnectionRefusedError()
+
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: _FakeSocket())
+
+    assert (
+        CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock") is True
+    )
+
+
+def test_is_socket_closed_handles_socket_creation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_socket(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(socket, "socket", _raise_socket)
+
+    assert (
+        CodeManager.is_socket_closed(Path(tempfile.gettempdir()) / "fake.sock") is False
+    )
 
 
 def test_async_code_manager_methods_delegate_to_private_sync_methods() -> None:

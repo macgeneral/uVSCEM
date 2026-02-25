@@ -22,6 +22,35 @@ pytestmark = pytest.mark.slow
 ASSETS_DIR = Path(__file__).parent / "assets"
 
 
+def _artifact_cache_dir(tmp_path: Path, name: str) -> Path:
+    cache_root = os.environ.get("UVSCEM_INTEGRATION_ARTIFACT_CACHE", "").strip()
+    if cache_root:
+        base_path = Path(cache_root).expanduser()
+    else:
+        project_root = Path(__file__).resolve().parents[2]
+        base_path = project_root / ".tmp" / "uvscem-test-artifacts"
+
+    try:
+        base_path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        base_path = Path.home() / ".cache" / "uvscem-test-artifacts"
+        try:
+            base_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            base_path = tmp_path / "cache"
+    target_path = base_path / name
+    target_path.mkdir(parents=True, exist_ok=True)
+    return target_path
+
+
+def _clear_cached_extension_artifacts(tmp_path: Path, extension_id: str) -> None:
+    cache_dir = _artifact_cache_dir(tmp_path, "downloads")
+    for file_path in cache_dir.glob(f"{extension_id}-*.vsix"):
+        file_path.unlink(missing_ok=True)
+    for file_path in cache_dir.glob(f"{extension_id}-*.sigzip"):
+        file_path.unlink(missing_ok=True)
+
+
 @pytest.fixture(autouse=True)
 def _mock_vscode_socket_paths_for_ci(
     monkeypatch: pytest.MonkeyPatch,
@@ -120,7 +149,7 @@ def test_integration_fetch_install_uninstall_with_verification(
     manager = CodeExtensionManager(
         config_name=str(config_path),
         code_path=isolated_code_binary,
-        target_directory=str(tmp_path / "cache"),
+        target_directory=str(_artifact_cache_dir(tmp_path, "downloads")),
     )
     asyncio.run(manager.initialize())
     extensions = manager.extensions or _load_extensions(config_path)
@@ -171,7 +200,7 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
     manager = CodeExtensionManager(
         config_name=str(config_path),
         code_path=shutil.which("code") or "code",
-        target_directory=str(tmp_path / "cache"),
+        target_directory=str(_artifact_cache_dir(tmp_path, "downloads")),
     )
 
     metadata_map = asyncio.run(manager.api_manager.get_extension_metadata(extension_id))
@@ -187,14 +216,17 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
     if not payload:
         pytest.skip("Downloaded VSIX is empty")
     payload[len(payload) // 2] ^= 0x01
-    vsix_path.write_bytes(bytes(payload))
+    tampered_vsix_path = tmp_path / "tampered.vsix"
+    tampered_vsix_path.write_bytes(bytes(payload))
 
     with provision_vsce_sign_binary_for_run(install_dir=tmp_path / "bin") as binary:
         manager.vsce_sign_binary = binary
         try:
             with pytest.raises(subprocess.CalledProcessError):
                 asyncio.run(
-                    manager.verify_extension_signature(vsix_path, signature_path)
+                    manager.verify_extension_signature(
+                        tampered_vsix_path, signature_path
+                    )
                 )
         finally:
             manager.vsce_sign_binary = None
@@ -203,7 +235,7 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
 @pytest.mark.slow
 @pytest.mark.parametrize(
     "extension_id",
-    ["eamodio.gitlens", "ms-vscode.vscode-node-azure-pack"],
+    ["dbaeumer.vscode-eslint", "cristianvasquez1312.hadar-vscode"],
     ids=["extension", "extension-pack"],
 )
 @pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "pinned-older"])
@@ -213,12 +245,14 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     extension_id: str,
     pinned: bool,
 ) -> None:
+    _clear_cached_extension_artifacts(tmp_path, extension_id)
+
     if pinned:
         metadata_map = asyncio.run(
             CodeExtensionManager(
                 config_name=str(ASSETS_DIR / "test_extensions.json"),
                 code_path=shutil.which("code") or "code",
-                target_directory=str(tmp_path / "probe-cache"),
+                target_directory=str(_artifact_cache_dir(tmp_path, "downloads")),
             ).api_manager.get_extension_metadata(
                 extension_id,
                 include_latest_stable_version_only=False,
@@ -236,6 +270,16 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
             ),
             None,
         )
+        if pinned_metadata is None:
+            pinned_metadata = next(
+                (
+                    version
+                    for version in versions
+                    if str(version.get("version", ""))
+                    and str(version.get("signature", ""))
+                ),
+                None,
+            )
         if pinned_metadata is None:
             pytest.skip("Could not resolve older extension version for pinned test")
         resolved_version = str(pinned_metadata.get("version", ""))
@@ -275,7 +319,7 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
         extension_manager_module.export_offline_bundle(
             config_name=str(config_path),
             bundle_path=str(bundle_path),
-            target_path=str(tmp_path / "export-cache"),
+            target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
             code_path=code_binary,
         )
 
@@ -339,7 +383,7 @@ def test_integration_offline_bundle_import_local_vscode_install_with_misconfigur
     extension_manager_module.export_offline_bundle(
         config_name=str(config_path),
         bundle_path=str(bundle_path),
-        target_path=str(tmp_path / "export-cache-local"),
+        target_path=str(_artifact_cache_dir(tmp_path, "downloads")),
         code_path=code_binary,
     )
 

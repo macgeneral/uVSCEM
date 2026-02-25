@@ -2,8 +2,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "eamodio.gitlens",
-        "ms-vscode.vscode-node-azure-pack"
+        "dbaeumer.vscode-eslint",
+        "cristianvasquez1312.hadar-vscode"
       ]
     }
   }

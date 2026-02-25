@@ -272,6 +272,9 @@ class CodeExtensionManager(object):
 
         def _download_sync() -> Path:
             target_path = self.target_path.joinpath(self.get_filename(extension_id))
+            if target_path.is_file() and target_path.stat().st_size > 0:
+                logger.info(f"Reusing cached VSIX for {extension_id}: {target_path}")
+                return target_path
             logger.info(f"Installing {extension_id} from {url}")
             return stream_download_to_target(
                 session=self.api_manager.session,
@@ -301,6 +304,11 @@ class CodeExtensionManager(object):
             target_path = self.target_path.joinpath(
                 self.get_signature_filename(extension_id)
             )
+            if target_path.is_file() and target_path.stat().st_size > 0:
+                logger.info(
+                    f"Reusing cached signature archive for {extension_id}: {target_path}"
+                )
+                return target_path
             return stream_download_to_target(
                 session=self.api_manager.session,
                 url=url,
@@ -627,9 +635,11 @@ def export_offline_bundle(
     try:
         bundle_dir = Path(bundle_path).expanduser().resolve()
         artifacts_dir = bundle_dir.joinpath("artifacts")
+        cache_dir = Path(os.path.expandvars(target_path)).expanduser().resolve()
         vsce_sign_dir = bundle_dir.joinpath("vsce-sign")
         bundle_dir.mkdir(parents=True, exist_ok=True)
         artifacts_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
         vsce_sign_dir.mkdir(parents=True, exist_ok=True)
 
         resolved_targets = resolve_vsce_sign_targets(
@@ -638,19 +648,30 @@ def export_offline_bundle(
             supported_targets=SUPPORTED_VSCE_SIGN_TARGETS,
         )
 
-        async def _run() -> tuple[list[str], dict[str, dict[str, Any]]]:
+        async def _run() -> tuple[
+            list[str],
+            dict[str, dict[str, Any]],
+            dict[str, tuple[Path, Path]],
+        ]:
             manager = CodeExtensionManager(
                 config_name=config_name,
                 code_path=code_path,
-                target_directory=str(artifacts_dir),
+                target_directory=str(cache_dir),
             )
             extensions = await manager.parse_all_extensions()
+            downloaded: dict[str, tuple[Path, Path]] = {}
             for extension_id in extensions:
-                await manager.download_extension(extension_id)
-                await manager.download_signature_archive(extension_id)
-            return extensions, manager.extension_metadata
+                vsix_path = await manager.download_extension(extension_id)
+                signature_path = await manager.download_signature_archive(extension_id)
+                downloaded[extension_id] = (vsix_path, signature_path)
+            return extensions, manager.extension_metadata, downloaded
 
-        extensions, extension_metadata = asyncio.run(_run())
+        extensions, extension_metadata, downloaded_artifacts = asyncio.run(_run())
+
+        for extension_id in extensions:
+            vsix_path, signature_path = downloaded_artifacts[extension_id]
+            shutil.copy2(vsix_path, artifacts_dir.joinpath(vsix_path.name))
+            shutil.copy2(signature_path, artifacts_dir.joinpath(signature_path.name))
 
         vsce_sign_binaries: list[dict[str, str]] = []
         for target in resolved_targets:
