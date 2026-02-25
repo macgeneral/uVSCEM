@@ -201,27 +201,44 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "pinned"])
+@pytest.mark.parametrize(
+    "extension_id",
+    ["eamodio.gitlens", "ms-vscode.vscode-node-azure-pack"],
+    ids=["extension", "extension-pack"],
+)
+@pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "pinned-older"])
 def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_proxy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    extension_id: str,
     pinned: bool,
 ) -> None:
-    extension_id = "ms-vscode-remote.vscode-remote-extensionpack"
-
     if pinned:
-        probe_manager = CodeExtensionManager(
-            config_name=str(ASSETS_DIR / "test_extensions.json"),
-            code_path=shutil.which("code") or "code",
-            target_directory=str(tmp_path / "probe-cache"),
-        )
         metadata_map = asyncio.run(
-            probe_manager.api_manager.get_extension_metadata(extension_id)
+            CodeExtensionManager(
+                config_name=str(ASSETS_DIR / "test_extensions.json"),
+                code_path=shutil.which("code") or "code",
+                target_directory=str(tmp_path / "probe-cache"),
+            ).api_manager.get_extension_metadata(
+                extension_id,
+                include_latest_stable_version_only=False,
+            )
         )
         versions = metadata_map.get(extension_id, [])
-        if not versions:
-            pytest.skip("Could not resolve extension metadata for pinned test")
-        resolved_version = str(versions[0].get("version", ""))
+        latest_version = str(versions[0].get("version", "")) if versions else ""
+        pinned_metadata = next(
+            (
+                version
+                for version in versions[1:]
+                if str(version.get("version", ""))
+                and str(version.get("signature", ""))
+                and str(version.get("version", "")) != latest_version
+            ),
+            None,
+        )
+        if pinned_metadata is None:
+            pytest.skip("Could not resolve older extension version for pinned test")
+        resolved_version = str(pinned_metadata.get("version", ""))
         if not resolved_version:
             pytest.skip("Could not resolve extension version for pinned test")
         extension_spec = f"{extension_id}@{resolved_version}"
@@ -246,50 +263,49 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
     )
 
     bundle_path = tmp_path / "bundle"
+    code_binary = shutil.which("code") or "code"
     sandbox_vscode_root = tmp_path / "vscode-server"
     sandbox_extensions = sandbox_vscode_root / "extensions"
     sandbox_extensions.mkdir(parents=True, exist_ok=True)
     (sandbox_extensions / "extensions.json").write_text("[]", encoding="utf-8")
 
     monkeypatch.setattr(extension_manager_module, "vscode_root", sandbox_vscode_root)
-
-    extension_manager_module.export_offline_bundle(
-        config_name=str(config_path),
-        bundle_path=str(bundle_path),
-        target_path=str(tmp_path / "export-cache"),
-        code_path=shutil.which("code") or "code",
-    )
-
-    with _misconfigured_proxy(monkeypatch):
-        extension_manager_module.import_offline_bundle(
+    ordered_extensions: list[str] = []
+    try:
+        extension_manager_module.export_offline_bundle(
+            config_name=str(config_path),
             bundle_path=str(bundle_path),
-            target_path=str(tmp_path / "import-cache"),
-            code_path=shutil.which("code") or "code",
-            strict_offline=True,
+            target_path=str(tmp_path / "export-cache"),
+            code_path=code_binary,
         )
 
-    manifest = json.loads((bundle_path / "manifest.json").read_text(encoding="utf-8"))
-    ordered_extensions = [
-        str(extension_id) for extension_id in manifest.get("ordered_extensions", [])
-    ]
-    extension_entries = {
-        str(entry.get("id", "")): entry for entry in manifest.get("extensions", [])
-    }
-    installed_metadata = json.loads(
-        (sandbox_extensions / "extensions.json").read_text(encoding="utf-8")
-    )
-    installed_ids = {
-        str(entry.get("identifier", {}).get("id", ""))
-        for entry in installed_metadata
-        if isinstance(entry, dict)
-    }
-    for installed_extension_id in ordered_extensions:
-        assert installed_extension_id in installed_ids
+        with _misconfigured_proxy(monkeypatch):
+            extension_manager_module.import_offline_bundle(
+                bundle_path=str(bundle_path),
+                target_path=str(tmp_path / "import-cache"),
+                code_path=code_binary,
+                strict_offline=True,
+            )
 
-    if pinned:
-        assert str(extension_entries.get(extension_id, {}).get("version", "")) == (
-            resolved_version
+        manifest = json.loads(
+            (bundle_path / "manifest.json").read_text(encoding="utf-8")
         )
+        ordered_extensions = [
+            str(resolved_extension_id)
+            for resolved_extension_id in manifest.get("ordered_extensions", [])
+        ]
+        extension_entries = {
+            str(entry.get("id", "")): entry for entry in manifest.get("extensions", [])
+        }
+        assert extension_id in set(ordered_extensions)
+
+        if pinned:
+            assert str(extension_entries.get(extension_id, {}).get("version", "")) == (
+                resolved_version
+            )
+    finally:
+        for installed_extension_id in set(ordered_extensions + [extension_id]):
+            _uninstall_extension(code_binary, installed_extension_id)
 
 
 @pytest.mark.slow

@@ -2,7 +2,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode-remote.vscode-remote-extensionpack"
+        "eamodio.gitlens",
+        "ms-vscode.vscode-node-azure-pack"
       ]
     }
   }

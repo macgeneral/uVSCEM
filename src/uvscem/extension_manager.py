@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import datetime
-import hashlib
 import json
 import logging
 import os
@@ -22,7 +20,34 @@ import requests
 from dependency_algorithm import Dependencies
 
 from uvscem.api_client import CodeAPIManager
+from uvscem.bundle_io import (
+    build_bundle_manifest,
+    build_extension_manifest_entry,
+    resolve_bundled_vsce_sign_binary,
+    resolve_vsce_sign_targets,
+    sha256_file,
+)
 from uvscem.code_manager import CodeManager
+from uvscem.exceptions import (
+    InstallationWorkflowError,
+    OfflineBundleExportError,
+    OfflineBundleImportExecutionError,
+    OfflineBundleImportMissingFileError,
+    OfflineBundleImportValidationError,
+    OfflineModeError,
+)
+from uvscem.install_engine import (
+    run_code_cli_install,
+    run_vsce_sign_verify,
+    stream_download_to_target,
+)
+from uvscem.internal_config import (
+    DEFAULT_USER_AGENT,
+    HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
+    HTTP_STREAM_READ_TIMEOUT_SECONDS,
+    MAX_INSTALL_RETRIES,
+)
+from uvscem.models import ExtensionSpec, ResolvedExtensionRequest
 from uvscem.vsce_sign_bootstrap import (
     DEFAULT_VSCE_SIGN_VERSION,
     SUPPORTED_VSCE_SIGN_TARGETS,
@@ -37,11 +62,32 @@ __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
 # attempt to install an extension a maximum of three times
-max_retries = 3
-user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
+max_retries = MAX_INSTALL_RETRIES
+user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _workflow_error_message(operation: str, exc: Exception) -> str:
+    return f"{operation} failed: {exc}"
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        json.dump(payload, tmp_file)
+        tmp_file.flush()
+        os.fsync(tmp_file.fileno())
+    tmp_path.replace(path)
 
 
 class CodeExtensionManager(object):
@@ -116,8 +162,7 @@ class CodeExtensionManager(object):
             if dependency not in extensions:
                 extensions.append(dependency)
 
-    async def parse_all_extensions(self) -> list[str]:
-        # use json5 for parsing json files that may contain comments
+    async def _load_extension_specs(self) -> list[ExtensionSpec]:
         parsed_config: dict[str, Any] = await asyncio.to_thread(
             lambda: json5.loads(self.dev_container_config_path.read_text())
         )
@@ -126,30 +171,54 @@ class CodeExtensionManager(object):
             .get("vscode", {})
             .get("extensions", [])
         )
-        extension_pins: dict[str, str] = {}
-        extensions: list[str] = []
+        return [
+            ExtensionSpec(*self.parse_extension_spec(extension_spec))
+            for extension_spec in raw_extensions
+        ]
 
-        for extension_spec in raw_extensions:
-            extension_id, pinned_version = self.parse_extension_spec(extension_spec)
-            extensions.append(extension_id)
-            if pinned_version:
-                extension_pins[extension_id] = pinned_version
+    async def _resolve_extension_requests(
+        self, specs: list[ExtensionSpec]
+    ) -> tuple[list[str], dict[str, str]]:
+        extensions: list[str] = []
+        extension_pins: dict[str, str] = {}
+        for spec in specs:
+            if not spec.extension_id:
+                continue
+            extensions.append(spec.extension_id)
+            if spec.pinned_version:
+                extension_pins[spec.extension_id] = spec.pinned_version
+        return extensions, extension_pins
+
+    async def _fetch_metadata_for_request(
+        self,
+        request: ResolvedExtensionRequest,
+    ) -> dict[str, Any]:
+        metadata = await self.api_manager.get_extension_metadata(
+            request.extension_id,
+            include_latest_stable_version_only=not bool(request.pinned_version),
+            requested_version=request.pinned_version,
+        )
+        versions = metadata.get(request.extension_id, [])
+        if not versions:
+            if request.pinned_version:
+                raise ValueError(
+                    f"Pinned extension version not found: {request.extension_id}@{request.pinned_version}"
+                )
+            return {}
+        return dict(versions[0])
+
+    async def parse_all_extensions(self) -> list[str]:
+        specs = await self._load_extension_specs()
+        extensions, extension_pins = await self._resolve_extension_requests(specs)
 
         for extension_id in extensions:
-            pinned_version = extension_pins.get(extension_id, "")
-            metadata = await self.api_manager.get_extension_metadata(
-                extension_id,
-                include_latest_stable_version_only=not bool(pinned_version),
-                requested_version=pinned_version,
+            request = ResolvedExtensionRequest(
+                extension_id=extension_id,
+                pinned_version=extension_pins.get(extension_id, ""),
             )
-            versions = metadata.get(extension_id, [])
-            if not versions:
-                if pinned_version:
-                    raise ValueError(
-                        f"Pinned extension version not found: {extension_id}@{pinned_version}"
-                    )
+            metadata = await self._fetch_metadata_for_request(request)
+            if not metadata:
                 continue
-            metadata = versions[0]
             self.extension_metadata[extension_id] = metadata
 
             dependencies = self.sanitize_dependencies(metadata.get("dependencies", []))
@@ -202,25 +271,19 @@ class CodeExtensionManager(object):
         }
 
         def _download_sync() -> Path:
-            with tempfile.TemporaryDirectory(prefix="vscode-extension.") as tmp_dir:
-                file_path = Path(tmp_dir, self.get_filename(extension_id))
-
-                with open(file_path, "wb") as f:
-                    logger.info(f"Installing {extension_id} from {url}")
-                    response: requests.Response = self.api_manager.session.get(
-                        url, stream=True, headers=headers
-                    )
-                    response.raise_for_status()
-
-                    for chunk in response.iter_content(chunk_size=1024 * 8):
-                        if chunk:
-                            f.write(chunk)
-                            f.flush()
-                            os.fsync(f.fileno())
-
-                target_path = self.target_path.joinpath(self.get_filename(extension_id))
-                shutil.move(file_path, target_path)
-                return target_path
+            target_path = self.target_path.joinpath(self.get_filename(extension_id))
+            logger.info(f"Installing {extension_id} from {url}")
+            return stream_download_to_target(
+                session=self.api_manager.session,
+                url=url,
+                target_path=target_path,
+                headers=headers,
+                temp_prefix="vscode-extension.",
+                timeout=(
+                    HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
+                    HTTP_STREAM_READ_TIMEOUT_SECONDS,
+                ),
+            )
 
         return await asyncio.to_thread(_download_sync)
 
@@ -235,28 +298,20 @@ class CodeExtensionManager(object):
         }
 
         def _download_sync() -> Path:
-            with tempfile.TemporaryDirectory(
-                prefix="vscode-extension-signature."
-            ) as tmp_dir:
-                file_path = Path(tmp_dir, self.get_signature_filename(extension_id))
-
-                with open(file_path, "wb") as f:
-                    response: requests.Response = self.api_manager.session.get(
-                        url, stream=True, headers=headers
-                    )
-                    response.raise_for_status()
-
-                    for chunk in response.iter_content(chunk_size=1024 * 8):
-                        if chunk:
-                            f.write(chunk)
-                            f.flush()
-                            os.fsync(f.fileno())
-
-                target_path = self.target_path.joinpath(
-                    self.get_signature_filename(extension_id)
-                )
-                shutil.move(file_path, target_path)
-                return target_path
+            target_path = self.target_path.joinpath(
+                self.get_signature_filename(extension_id)
+            )
+            return stream_download_to_target(
+                session=self.api_manager.session,
+                url=url,
+                target_path=target_path,
+                headers=headers,
+                temp_prefix="vscode-extension-signature.",
+                timeout=(
+                    HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
+                    HTTP_STREAM_READ_TIMEOUT_SECONDS,
+                ),
+            )
 
         return await asyncio.to_thread(_download_sync)
 
@@ -267,28 +322,13 @@ class CodeExtensionManager(object):
         if self.vsce_sign_binary is None:
             raise RuntimeError("vsce-sign binary is not initialized for this run")
 
-        cmd = [
-            str(self.vsce_sign_binary),
-            "verify",
-            "--package",
-            str(extension_path),
-            "--signaturearchive",
-            str(signature_archive_path),
-        ]
-        process = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            capture_output=True,
-            check=False,
-            text=True,
+        await asyncio.to_thread(
+            run_vsce_sign_verify,
+            vsce_sign_binary=self.vsce_sign_binary,
+            extension_path=extension_path,
+            signature_archive_path=signature_archive_path,
+            run_command=subprocess.run,
         )
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(
-                process.returncode,
-                cmd,
-                process.stdout,
-                process.stderr,
-            )
 
     async def install_extension_manually(
         self, extension_id: str, extension_path: Path, update_json=True
@@ -319,33 +359,46 @@ class CodeExtensionManager(object):
             await self.update_extensions_json(extension_id=extension_id)
 
     async def update_extensions_json(
-        self, extension_id: str = "", extension_ids: list[str] = []
+        self, extension_id: str = "", extension_ids: list[str] | None = None
     ):
         self.installed = await self.find_installed()
+        extension_ids = list(extension_ids or [])
 
         if extension_id:
             extension_ids.append(extension_id)
 
+        def _metadata_extension_id(metadata: dict[str, Any]) -> str:
+            return str(metadata.get("identifier", {}).get("id", "")).lower()
+
         for eid in extension_ids:
-            # TODO: parse and update contents!
             installation_metadata = self.extension_metadata.get(eid, {}).get(
                 "installation_metadata"
             )
             if installation_metadata:
-                self.installed.append(installation_metadata)
+                incoming = dict(installation_metadata)
+                incoming_id = _metadata_extension_id(incoming)
+                if not incoming_id:
+                    self.installed.append(incoming)
+                    continue
+
+                replaced = False
+                deduplicated: list[dict[str, Any]] = []
+                for item in self.installed:
+                    if _metadata_extension_id(item) == incoming_id:
+                        if not replaced:
+                            deduplicated.append(incoming)
+                            replaced = True
+                        continue
+                    deduplicated.append(item)
+
+                if not replaced:
+                    deduplicated.append(incoming)
+
+                self.installed = deduplicated
 
         def _update_sync() -> None:
             json_path: Path = self.extensions_json_path()
-            backup_path: Path = json_path.rename(f"{json_path}.bak")
-            try:
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(self.installed, f)
-            except Exception:
-                if backup_path.is_file():
-                    shutil.move(backup_path, json_path)
-                if json_path.stat().st_size == 0:
-                    with open(json_path, "w", encoding="utf-8") as f:
-                        json.dump("[]", f)
+            _write_json_atomic(json_path, self.installed)
 
         await asyncio.to_thread(_update_sync)
 
@@ -401,24 +454,12 @@ class CodeExtensionManager(object):
             )
         else:
             try:
-                cmd = [
-                    self.code_binary,
-                    "--install-extension",
-                    f"{file_path}",
-                    "--force",
-                ]
-                output = await asyncio.to_thread(
-                    subprocess.run,
-                    cmd,
-                    capture_output=True,
-                    check=True,
-                    text=True,
+                await asyncio.to_thread(
+                    run_code_cli_install,
+                    code_binary=self.code_binary,
+                    extension_path=file_path,
+                    run_command=subprocess.run,
                 )
-                error_msg = "Error: "
-                if error_msg in f"{output.stdout}" or error_msg in f"{output.stderr}":
-                    raise subprocess.CalledProcessError(
-                        1, cmd, output.stdout, output.stderr
-                    )
             except subprocess.CalledProcessError as e:
                 logger.error(f"Something went wrong: {e}")
                 await self.socket_manager.find_socket(update_environment=True)
@@ -500,7 +541,18 @@ def install(
         await manager.initialize()
         await manager.install_async()
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except (
+        requests.RequestException,
+        subprocess.CalledProcessError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        raise InstallationWorkflowError(
+            _workflow_error_message("Extension installation", exc)
+        ) from exc
 
 
 def _run_command(cmd: list[str]) -> None:
@@ -572,103 +624,85 @@ def export_offline_bundle(
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
 
-    bundle_dir = Path(bundle_path).expanduser().resolve()
-    artifacts_dir = bundle_dir.joinpath("artifacts")
-    vsce_sign_dir = bundle_dir.joinpath("vsce-sign")
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    vsce_sign_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        bundle_dir = Path(bundle_path).expanduser().resolve()
+        artifacts_dir = bundle_dir.joinpath("artifacts")
+        vsce_sign_dir = bundle_dir.joinpath("vsce-sign")
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        vsce_sign_dir.mkdir(parents=True, exist_ok=True)
 
-    def _resolve_targets(value: str) -> list[str]:
-        if value == "current":
-            return [get_vsce_sign_target()]
-        if value == "all":
-            return list(SUPPORTED_VSCE_SIGN_TARGETS)
-        result = [item.strip() for item in value.split(",") if item.strip()]
-        if not result:
-            raise ValueError("No valid vsce-sign targets were provided")
-        return result
+        resolved_targets = resolve_vsce_sign_targets(
+            value=vsce_sign_targets,
+            current_target=get_vsce_sign_target(),
+            supported_targets=SUPPORTED_VSCE_SIGN_TARGETS,
+        )
 
-    resolved_targets = _resolve_targets(vsce_sign_targets)
+        async def _run() -> tuple[list[str], dict[str, dict[str, Any]]]:
+            manager = CodeExtensionManager(
+                config_name=config_name,
+                code_path=code_path,
+                target_directory=str(artifacts_dir),
+            )
+            extensions = await manager.parse_all_extensions()
+            for extension_id in extensions:
+                await manager.download_extension(extension_id)
+                await manager.download_signature_archive(extension_id)
+            return extensions, manager.extension_metadata
 
-    async def _run() -> tuple[list[str], dict[str, dict[str, Any]]]:
-        manager = CodeExtensionManager(
+        extensions, extension_metadata = asyncio.run(_run())
+
+        vsce_sign_binaries: list[dict[str, str]] = []
+        for target in resolved_targets:
+            target_dir = vsce_sign_dir.joinpath(target)
+            binary_path = install_vsce_sign_binary_for_target(
+                target=target,
+                install_dir=target_dir,
+                version=vsce_sign_version,
+                force=True,
+            )
+            vsce_sign_binaries.append(
+                {
+                    "target": target,
+                    "package": get_vsce_sign_package_name(target),
+                    "binary": str(binary_path.relative_to(bundle_dir)),
+                    "sha256": sha256_file(binary_path),
+                }
+            )
+
+        extension_entries = [
+            build_extension_manifest_entry(
+                extension_id=extension_id,
+                metadata=extension_metadata.get(extension_id, {}),
+                artifacts_dir=artifacts_dir,
+            )
+            for extension_id in extensions
+        ]
+
+        manifest = build_bundle_manifest(
             config_name=config_name,
-            code_path=code_path,
-            target_directory=str(artifacts_dir),
+            ordered_extensions=extensions,
+            extension_entries=extension_entries,
+            vsce_sign_version=vsce_sign_version,
+            vsce_sign_binaries=vsce_sign_binaries,
         )
-        extensions = await manager.parse_all_extensions()
-        for extension_id in extensions:
-            await manager.download_extension(extension_id)
-            await manager.download_signature_archive(extension_id)
-        return extensions, manager.extension_metadata
-
-    extensions, extension_metadata = asyncio.run(_run())
-
-    def _sha256_file(path: Path) -> str:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-
-    vsce_sign_binaries: list[dict[str, str]] = []
-    for target in resolved_targets:
-        target_dir = vsce_sign_dir.joinpath(target)
-        binary_path = install_vsce_sign_binary_for_target(
-            target=target,
-            install_dir=target_dir,
-            version=vsce_sign_version,
-            force=True,
+        manifest_path = bundle_dir.joinpath("manifest.json")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
         )
-        vsce_sign_binaries.append(
-            {
-                "target": target,
-                "package": get_vsce_sign_package_name(target),
-                "binary": str(binary_path.relative_to(bundle_dir)),
-                "sha256": _sha256_file(binary_path),
-            }
-        )
-
-    extension_entries: list[dict[str, Any]] = []
-    for extension_id in extensions:
-        metadata = extension_metadata.get(extension_id, {})
-        extension_entries.append(
-            {
-                "id": extension_id,
-                "version": str(metadata.get("version", "")),
-                "filename": f"{extension_id}-{metadata.get('version', '')}.vsix",
-                "signature_filename": f"{extension_id}-{metadata.get('version', '')}.sigzip",
-                "vsix_sha256": _sha256_file(
-                    artifacts_dir.joinpath(
-                        f"{extension_id}-{metadata.get('version', '')}.vsix"
-                    )
-                ),
-                "signature_sha256": _sha256_file(
-                    artifacts_dir.joinpath(
-                        f"{extension_id}-{metadata.get('version', '')}.sigzip"
-                    )
-                ),
-                "installation_metadata": metadata.get("installation_metadata", {}),
-                "dependencies": list(metadata.get("dependencies", [])),
-                "extension_pack": list(metadata.get("extension_pack", [])),
-            }
-        )
-
-    manifest = {
-        "schema_version": 1,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "config_name": config_name,
-        "ordered_extensions": extensions,
-        "extensions": extension_entries,
-        "vsce_sign": {
-            "version": vsce_sign_version,
-            "binaries": vsce_sign_binaries,
-        },
-    }
-    manifest_path = bundle_dir.joinpath("manifest.json")
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    if manifest_signing_key:
-        _sign_bundle_manifest(manifest_path, manifest_signing_key)
+        if manifest_signing_key:
+            _sign_bundle_manifest(manifest_path, manifest_signing_key)
+    except (
+        requests.RequestException,
+        subprocess.CalledProcessError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        raise OfflineBundleExportError(
+            _workflow_error_message("Offline bundle export", exc)
+        ) from exc
 
 
 def import_offline_bundle(
@@ -686,146 +720,156 @@ def import_offline_bundle(
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
 
-    bundle_dir = Path(bundle_path).expanduser().resolve()
-    manifest_path = bundle_dir.joinpath("manifest.json")
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"Offline bundle manifest not found: {manifest_path}")
-
-    if verify_manifest_signature:
-        signature_path = manifest_path.with_suffix(f"{manifest_path.suffix}.asc")
-        if not signature_path.is_file():
+    try:
+        bundle_dir = Path(bundle_path).expanduser().resolve()
+        manifest_path = bundle_dir.joinpath("manifest.json")
+        if not manifest_path.is_file():
             raise FileNotFoundError(
-                f"Offline bundle manifest signature not found: {signature_path}"
+                f"Offline bundle manifest not found: {manifest_path}"
             )
-        _verify_bundle_manifest_signature(
-            manifest_path=manifest_path,
-            signature_path=signature_path,
-            verification_keyring=manifest_verification_keyring,
+
+        if verify_manifest_signature:
+            signature_path = manifest_path.with_suffix(f"{manifest_path.suffix}.asc")
+            if not signature_path.is_file():
+                raise FileNotFoundError(
+                    f"Offline bundle manifest signature not found: {signature_path}"
+                )
+            _verify_bundle_manifest_signature(
+                manifest_path=manifest_path,
+                signature_path=signature_path,
+                verification_keyring=manifest_verification_keyring,
+            )
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if int(manifest.get("schema_version", 0)) != 1:
+            raise ValueError("Unsupported offline bundle schema version")
+
+        manager = CodeExtensionManager(
+            config_name=str(manifest_path),
+            code_path=code_path,
+            target_directory=target_path,
         )
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if int(manifest.get("schema_version", 0)) != 1:
-        raise ValueError("Unsupported offline bundle schema version")
+        if strict_offline and hasattr(manager, "api_manager"):
+            session = getattr(manager.api_manager, "session", None)
+            if session is not None:
 
-    manager = CodeExtensionManager(
-        config_name=str(manifest_path),
-        code_path=code_path,
-        target_directory=target_path,
-    )
+                def _offline_request(*_args, **_kwargs):
+                    raise RuntimeError(
+                        "Network access is disabled in strict offline mode"
+                    )
 
-    if strict_offline and hasattr(manager, "api_manager"):
-        session = getattr(manager.api_manager, "session", None)
-        if session is not None:
+                setattr(session, "request", _offline_request)
 
-            def _offline_request(*_args, **_kwargs):
-                raise RuntimeError("Network access is disabled in strict offline mode")
+        extensions_json = manager.extensions_json_path()
+        extensions_json.parent.mkdir(parents=True, exist_ok=True)
+        if not extensions_json.is_file():
+            extensions_json.write_text("[]", encoding="utf-8")
 
-            setattr(session, "request", _offline_request)
-
-    def _sha256_file(path: Path) -> str:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-
-    extensions_json = manager.extensions_json_path()
-    extensions_json.parent.mkdir(parents=True, exist_ok=True)
-    if not extensions_json.is_file():
-        extensions_json.write_text("[]", encoding="utf-8")
-
-    extension_entries = {
-        str(entry.get("id", "")): entry for entry in manifest.get("extensions", [])
-    }
-    ordered_extensions: list[str] = [
-        str(extension_id) for extension_id in manifest.get("ordered_extensions", [])
-    ]
-
-    artifacts_dir = bundle_dir.joinpath("artifacts")
-    for extension_id in ordered_extensions:
-        entry = extension_entries.get(extension_id)
-        if not entry:
-            raise ValueError(
-                f"Missing extension manifest entry for extension: {extension_id}"
-            )
-
-        filename = str(entry.get("filename", ""))
-        signature_filename = str(entry.get("signature_filename", ""))
-        source_vsix = artifacts_dir.joinpath(filename)
-        source_signature = artifacts_dir.joinpath(signature_filename)
-        if not source_vsix.is_file() or not source_signature.is_file():
-            raise FileNotFoundError(
-                f"Missing offline artifact(s) for {extension_id}: {filename}, {signature_filename}"
-            )
-
-        expected_vsix_sha256 = str(entry.get("vsix_sha256", ""))
-        if expected_vsix_sha256 and _sha256_file(source_vsix) != expected_vsix_sha256:
-            raise ValueError(f"VSIX checksum mismatch for {extension_id}")
-
-        expected_signature_sha256 = str(entry.get("signature_sha256", ""))
-        if (
-            expected_signature_sha256
-            and _sha256_file(source_signature) != expected_signature_sha256
-        ):
-            raise ValueError(f"Signature checksum mismatch for {extension_id}")
-
-        shutil.copy2(source_vsix, manager.target_path.joinpath(filename))
-        shutil.copy2(source_signature, manager.target_path.joinpath(signature_filename))
-
-        manager.extension_metadata[extension_id] = {
-            "version": str(entry.get("version", "")),
-            "url": "offline",
-            "signature": "offline",
-            "installation_metadata": entry.get("installation_metadata", {}),
-            "dependencies": list(entry.get("dependencies", [])),
-            "extension_pack": list(entry.get("extension_pack", [])),
+        extension_entries = {
+            str(entry.get("id", "")): entry for entry in manifest.get("extensions", [])
         }
+        ordered_extensions: list[str] = [
+            str(extension_id) for extension_id in manifest.get("ordered_extensions", [])
+        ]
 
-    vsce_sign_info = manifest.get("vsce_sign", {})
-    binaries = list(vsce_sign_info.get("binaries", []))
+        artifacts_dir = bundle_dir.joinpath("artifacts")
+        for extension_id in ordered_extensions:
+            entry = extension_entries.get(extension_id)
+            if not entry:
+                raise ValueError(
+                    f"Missing extension manifest entry for extension: {extension_id}"
+                )
 
-    if binaries:
-        current_target = get_vsce_sign_target()
-        selected = None
-        for item in binaries:
-            if str(item.get("target", "")) == current_target:
-                selected = item
-                break
-        if selected is None and len(binaries) == 1:
-            selected = binaries[0]
-        if selected is None:
-            raise ValueError(
-                f"No bundled vsce-sign binary found for target {current_target}"
+            filename = str(entry.get("filename", ""))
+            signature_filename = str(entry.get("signature_filename", ""))
+            source_vsix = artifacts_dir.joinpath(filename)
+            source_signature = artifacts_dir.joinpath(signature_filename)
+            if not source_vsix.is_file() or not source_signature.is_file():
+                raise FileNotFoundError(
+                    f"Missing offline artifact(s) for {extension_id}: {filename}, {signature_filename}"
+                )
+
+            expected_vsix_sha256 = str(entry.get("vsix_sha256", ""))
+            if (
+                expected_vsix_sha256
+                and sha256_file(source_vsix) != expected_vsix_sha256
+            ):
+                raise ValueError(f"VSIX checksum mismatch for {extension_id}")
+
+            expected_signature_sha256 = str(entry.get("signature_sha256", ""))
+            if (
+                expected_signature_sha256
+                and sha256_file(source_signature) != expected_signature_sha256
+            ):
+                raise ValueError(f"Signature checksum mismatch for {extension_id}")
+
+            shutil.copy2(source_vsix, manager.target_path.joinpath(filename))
+            shutil.copy2(
+                source_signature,
+                manager.target_path.joinpath(signature_filename),
             )
 
-        vsce_sign_binary_rel = str(selected.get("binary", ""))
-        vsce_sign_binary = bundle_dir.joinpath(vsce_sign_binary_rel)
-        expected_vsce_sign_sha256 = str(selected.get("sha256", ""))
-    else:
-        vsce_sign_binary_rel = str(vsce_sign_info.get("binary", ""))
-        vsce_sign_binary = bundle_dir.joinpath(vsce_sign_binary_rel)
-        expected_vsce_sign_sha256 = ""
+            manager.extension_metadata[extension_id] = {
+                "version": str(entry.get("version", "")),
+                "url": "offline",
+                "signature": "offline",
+                "installation_metadata": entry.get("installation_metadata", {}),
+                "dependencies": list(entry.get("dependencies", [])),
+                "extension_pack": list(entry.get("extension_pack", [])),
+            }
 
-    if not vsce_sign_binary.is_file():
-        raise FileNotFoundError(
-            f"Bundled vsce-sign binary not found: {vsce_sign_binary}"
+        vsce_sign_info = manifest.get("vsce_sign", {})
+        vsce_sign_binary, expected_vsce_sign_sha256 = resolve_bundled_vsce_sign_binary(
+            bundle_dir=bundle_dir,
+            vsce_sign_info=vsce_sign_info,
+            current_target=get_vsce_sign_target(),
         )
-    if (
-        expected_vsce_sign_sha256
-        and _sha256_file(vsce_sign_binary) != expected_vsce_sign_sha256
-    ):
-        raise ValueError("Bundled vsce-sign checksum mismatch")
 
-    async def _run() -> None:
-        manager.installed = await manager.find_installed()
-        manager.extensions = list(ordered_extensions)
-        await manager.exclude_installed()
+        if not vsce_sign_binary.is_file():
+            raise FileNotFoundError(
+                f"Bundled vsce-sign binary not found: {vsce_sign_binary}"
+            )
+        if (
+            expected_vsce_sign_sha256
+            and sha256_file(vsce_sign_binary) != expected_vsce_sign_sha256
+        ):
+            raise ValueError("Bundled vsce-sign checksum mismatch")
 
-        manager.vsce_sign_binary = vsce_sign_binary
-        try:
-            while manager.extensions:
-                await manager.install_extension(manager.extensions.pop(0))
-                await asyncio.sleep(1)
-        finally:
-            manager.vsce_sign_binary = None
+        async def _run() -> None:
+            manager.installed = await manager.find_installed()
+            manager.extensions = list(ordered_extensions)
+            await manager.exclude_installed()
 
-    asyncio.run(_run())
+            manager.vsce_sign_binary = vsce_sign_binary
+            try:
+                while manager.extensions:
+                    await manager.install_extension(manager.extensions.pop(0))
+                    await asyncio.sleep(1)
+            finally:
+                manager.vsce_sign_binary = None
+
+        asyncio.run(_run())
+    except FileNotFoundError as exc:
+        raise OfflineBundleImportMissingFileError(
+            _workflow_error_message("Offline bundle import", exc)
+        ) from exc
+    except ValueError as exc:
+        raise OfflineBundleImportValidationError(
+            _workflow_error_message("Offline bundle import", exc)
+        ) from exc
+    except RuntimeError as exc:
+        if "strict offline mode" in str(exc):
+            raise OfflineModeError(
+                _workflow_error_message("Offline bundle import", exc)
+            ) from exc
+        raise OfflineBundleImportExecutionError(
+            _workflow_error_message("Offline bundle import", exc)
+        ) from exc
+    except (requests.RequestException, subprocess.CalledProcessError, OSError) as exc:
+        raise OfflineBundleImportExecutionError(
+            _workflow_error_message("Offline bundle import", exc)
+        ) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:

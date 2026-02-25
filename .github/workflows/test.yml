@@ -9,11 +9,20 @@ on:
 jobs:
   tests:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os:
+          - runner: ubuntu-latest
+            uv-version: "0.10.6"
+            uv-checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
+          - runner: macos-latest
+            uv-version: "0.10.6"
+            uv-checksum: "3993249d8f51deaf34cfce037e57e294e82267ff1f9dc45b7983a17afaf065b4"
+          - runner: windows-latest
+            uv-version: "0.10.6"
+            uv-checksum: "b27eb789f281e398a82197477de727fc8faf08605152115686da2c3cba0d25f7"
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
@@ -29,8 +38,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
-          version: "0.10.6"
-          checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
+          version: ${{ matrix.os.uv-version }}
+          checksum: ${{ matrix.os.uv-checksum }}
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml

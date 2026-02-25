@@ -11,6 +11,8 @@ def test_init_creates_session_with_http_adapters() -> None:
 
     assert "https://" in manager.session.adapters
     assert "http://" in manager.session.adapters
+    retry = manager.session.adapters["https://"].max_retries
+    assert "POST" in retry.allowed_methods
 
 
 def test_get_vscode_extension_handles_pagination_and_flags() -> None:
@@ -27,8 +29,9 @@ def test_get_vscode_extension_handles_pagination_and_flags() -> None:
         def json(self) -> dict:
             return {"results": [{"extensions": self._extensions}]}
 
-    def _post(url: str, json: dict, headers: dict) -> _Response:
+    def _post(url: str, json: dict, headers: dict, timeout: int) -> _Response:
         calls.append({"url": url, "json": json, "headers": headers})
+        assert timeout == 30
         if len(calls) == 1:
             return _Response([{"id": "one"}, {"id": "two"}])
         return _Response([{"id": "three"}])
@@ -68,7 +71,7 @@ def test_get_vscode_extension_supports_minimal_flag_set() -> None:
             return {"results": [{"extensions": []}]}
 
     manager.session = SimpleNamespace(
-        post=lambda url, json, headers: (
+        post=lambda url, json, headers, timeout: (
             calls.append({"url": url, "json": json, "headers": headers}) or _Response()
         )
     )

@@ -15,7 +15,14 @@ from typing import Any, cast
 import pytest
 
 from uvscem import extension_manager
+from uvscem.exceptions import (
+    InstallationWorkflowError,
+    OfflineBundleExportError,
+    OfflineBundleImportExecutionError,
+    OfflineModeError,
+)
 from uvscem.extension_manager import CodeExtensionManager
+from uvscem.models import ExtensionSpec
 
 
 @pytest.fixture
@@ -78,6 +85,22 @@ def test_parse_extension_spec_supports_pinned_versions(
         "publisher.name",
         "1.2.3-pre",
     )
+
+
+def test_resolve_extension_requests_skips_empty_specs(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    extensions, extension_pins = asyncio.run(
+        bare_manager._resolve_extension_requests(
+            [
+                ExtensionSpec(extension_id="", pinned_version=""),
+                ExtensionSpec(extension_id="publisher.name", pinned_version="1.2.3"),
+            ]
+        )
+    )
+
+    assert extensions == ["publisher.name"]
+    assert extension_pins == {"publisher.name": "1.2.3"}
 
 
 def test_init_sets_paths_and_creates_target_dir(
@@ -394,7 +417,6 @@ def test_verify_extension_signature_runs_vsce_sign(
     vsix_path.write_text("payload")
     sig_path.write_text("payload")
     bare_manager.vsce_sign_binary = Path("/tmp/vsce-sign")
-
     called: dict[str, list[str]] = {}
 
     def _run(cmd, capture_output, check, text):
@@ -548,31 +570,26 @@ def test_update_extensions_json_success_path(
     assert json.loads(json_path.read_text()) == [{"identifier": {"id": "pub.ext"}}]
 
 
-def test_update_extensions_json_handles_dump_error_and_recovers(
+def test_update_extensions_json_raises_and_keeps_original_on_write_error(
     bare_manager: CodeExtensionManager,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     json_path = tmp_path / "extensions.json"
-    json_path.write_text("")
+    json_path.write_text('[{"existing": true}]', encoding="utf-8")
 
     monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: json_path)
     monkeypatch.setattr(bare_manager, "find_installed", _find_installed)
+    monkeypatch.setattr(
+        extension_manager,
+        "_write_json_atomic",
+        lambda _path, _payload: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
 
-    original_dump = json.dump
-    calls = {"count": 0}
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(bare_manager.update_extensions_json(extension_ids=[]))
 
-    def _dump(*args, **kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            raise RuntimeError("first write failed")
-        return original_dump(*args, **kwargs)
-
-    monkeypatch.setattr(extension_manager.json, "dump", _dump)
-
-    asyncio.run(bare_manager.update_extensions_json(extension_ids=[]))
-
-    assert json_path.read_text() == '"[]"'
+    assert json_path.read_text(encoding="utf-8") == '[{"existing": true}]'
 
 
 def test_update_extensions_json_skips_missing_installation_metadata(
@@ -592,68 +609,140 @@ def test_update_extensions_json_skips_missing_installation_metadata(
     assert json.loads(json_path.read_text()) == []
 
 
-def test_update_extensions_json_handles_missing_backup_path(
+def test_update_extensions_json_default_extension_ids_do_not_leak_between_calls(
     bare_manager: CodeExtensionManager,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     json_path = tmp_path / "extensions.json"
-    json_path.write_text("")
+    json_path.write_text("[]", encoding="utf-8")
 
     monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: json_path)
     monkeypatch.setattr(bare_manager, "find_installed", _find_installed)
 
-    original_dump = json.dump
-    calls = {"count": 0}
+    bare_manager.extension_metadata = {
+        "pub.ext": {"installation_metadata": {"identifier": {"id": "pub.ext"}}},
+        "other.ext": {"installation_metadata": {"identifier": {"id": "other.ext"}}},
+    }
 
-    def _dump(*args, **kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            raise RuntimeError("first write failed")
-        return original_dump(*args, **kwargs)
+    asyncio.run(bare_manager.update_extensions_json(extension_id="pub.ext"))
+    assert json.loads(json_path.read_text(encoding="utf-8")) == [
+        {"identifier": {"id": "pub.ext"}}
+    ]
 
-    monkeypatch.setattr(extension_manager.json, "dump", _dump)
-
-    original_is_file = Path.is_file
-    original_stat = Path.stat
-
-    def _is_file(path: Path) -> bool:
-        if path.name == "extensions.json.bak":
-            return False
-        return original_is_file(path)
-
-    def _stat(path: Path):
-        if path == json_path:
-            return SimpleNamespace(st_size=0)
-        return original_stat(path)
-
-    monkeypatch.setattr(Path, "is_file", _is_file)
-    monkeypatch.setattr(Path, "stat", _stat)
-
-    asyncio.run(bare_manager.update_extensions_json(extension_ids=[]))
-
-    assert json_path.read_text() == '"[]"'
+    asyncio.run(bare_manager.update_extensions_json(extension_id="other.ext"))
+    assert json.loads(json_path.read_text(encoding="utf-8")) == [
+        {"identifier": {"id": "other.ext"}}
+    ]
 
 
-def test_update_extensions_json_keeps_non_empty_restored_file_on_error(
+def test_update_extensions_json_replaces_existing_entry_with_same_identifier(
     bare_manager: CodeExtensionManager,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     json_path = tmp_path / "extensions.json"
-    json_path.write_text('[{"existing": true}]')
+    json_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: json_path)
+
+    async def _find_installed() -> list[dict[str, Any]]:
+        return [
+            {
+                "identifier": {"id": "pub.ext"},
+                "version": "1.0.0",
+                "metadata": {"legacy": True},
+            },
+            {
+                "identifier": {"id": "other.ext"},
+                "version": "9.9.9",
+            },
+        ]
+
+    monkeypatch.setattr(bare_manager, "find_installed", _find_installed)
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "installation_metadata": {
+                "identifier": {"id": "pub.ext"},
+                "version": "2.0.0",
+                "metadata": {"legacy": False},
+            }
+        }
+    }
+
+    asyncio.run(bare_manager.update_extensions_json(extension_id="pub.ext"))
+
+    stored = json.loads(json_path.read_text(encoding="utf-8"))
+    assert stored == [
+        {
+            "identifier": {"id": "pub.ext"},
+            "version": "2.0.0",
+            "metadata": {"legacy": False},
+        },
+        {"identifier": {"id": "other.ext"}, "version": "9.9.9"},
+    ]
+
+
+def test_update_extensions_json_deduplicates_multiple_existing_entries(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    json_path = tmp_path / "extensions.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: json_path)
+
+    async def _find_installed() -> list[dict[str, Any]]:
+        return [
+            {"identifier": {"id": "pub.ext"}, "version": "1.0.0"},
+            {"identifier": {"id": "pub.ext"}, "version": "1.1.0"},
+        ]
+
+    monkeypatch.setattr(bare_manager, "find_installed", _find_installed)
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "installation_metadata": {
+                "identifier": {"id": "pub.ext"},
+                "version": "2.0.0",
+            }
+        }
+    }
+
+    asyncio.run(bare_manager.update_extensions_json(extension_id="pub.ext"))
+
+    assert json.loads(json_path.read_text(encoding="utf-8")) == [
+        {"identifier": {"id": "pub.ext"}, "version": "2.0.0"}
+    ]
+
+
+def test_update_extensions_json_appends_metadata_without_identifier(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    json_path = tmp_path / "extensions.json"
+    json_path.write_text("[]", encoding="utf-8")
 
     monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: json_path)
     monkeypatch.setattr(bare_manager, "find_installed", _find_installed)
-    monkeypatch.setattr(
-        extension_manager.json,
-        "dump",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "installation_metadata": {
+                "version": "2.0.0",
+                "metadata": {"note": "no identifier"},
+            }
+        }
+    }
 
-    asyncio.run(bare_manager.update_extensions_json(extension_ids=[]))
+    asyncio.run(bare_manager.update_extensions_json(extension_id="pub.ext"))
 
-    assert json_path.read_text() == '[{"existing": true}]'
+    assert json.loads(json_path.read_text(encoding="utf-8")) == [
+        {
+            "version": "2.0.0",
+            "metadata": {"note": "no identifier"},
+        }
+    ]
 
 
 def test_install_extension_handles_extension_pack_and_recursion(
@@ -1011,6 +1100,29 @@ def test_cli_install_function_uses_expected_constructor_args(
         "initialized": True,
         "installed": True,
     }
+
+
+def test_cli_install_function_maps_errors_to_installation_workflow_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Manager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path, target_directory
+
+        async def initialize(self) -> None:
+            return None
+
+        async def install_async(self) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _Manager)
+
+    with pytest.raises(
+        InstallationWorkflowError, match="Extension installation failed"
+    ):
+        extension_manager.install()
 
 
 def test_initialize_sets_extensions_and_installed(
@@ -1816,7 +1928,7 @@ def test_export_offline_bundle_supports_custom_target_list(
 def test_export_offline_bundle_rejects_empty_target_list(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="No valid vsce-sign targets"):
+    with pytest.raises(OfflineBundleExportError, match="No valid vsce-sign targets"):
         extension_manager.export_offline_bundle(
             bundle_path=str(tmp_path / "bundle"),
             vsce_sign_targets=" , ",
@@ -1984,7 +2096,7 @@ def test_import_offline_bundle_strict_offline_blocks_network_attempts(
     monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
     monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
 
-    with pytest.raises(RuntimeError, match="strict offline mode"):
+    with pytest.raises(OfflineModeError, match="strict offline mode"):
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
@@ -2072,6 +2184,157 @@ def test_import_offline_bundle_strict_offline_handles_missing_session(
         target_path=str(tmp_path / "cache"),
         strict_offline=True,
     )
+
+
+def test_import_offline_bundle_maps_execution_oserror(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            raise OSError("io")
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(
+        OfflineBundleImportExecutionError, match="Offline bundle import failed"
+    ):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
+
+
+def test_import_offline_bundle_maps_runtimeerror_without_offline_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    vsce_sign_dir = bundle_path / "vsce-sign"
+    artifacts.mkdir(parents=True)
+    vsce_sign_dir.mkdir(parents=True)
+
+    (artifacts / "publisher.demo-1.2.3.vsix").write_text("vsix")
+    (artifacts / "publisher.demo-1.2.3.sigzip").write_text("sig")
+    (vsce_sign_dir / "vsce-sign").write_text("binary")
+
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ordered_extensions": ["publisher.demo"],
+                "extensions": [
+                    {
+                        "id": "publisher.demo",
+                        "version": "1.2.3",
+                        "filename": "publisher.demo-1.2.3.vsix",
+                        "signature_filename": "publisher.demo-1.2.3.sigzip",
+                    }
+                ],
+                "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ImportManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            del config_name, code_path
+            self.target_path = Path(target_directory)
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict[str, dict[str, Any]] = {}
+            self.extensions: list[str] = []
+            self.installed: list[dict[str, Any]] = []
+            self.vsce_sign_binary: Path | None = None
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "vscode-root" / "extensions" / "extensions.json"
+
+        async def find_installed(self) -> list[dict[str, Any]]:
+            return []
+
+        async def exclude_installed(self) -> None:
+            return None
+
+        async def install_extension(
+            self, extension_id: str, extension_pack: bool = False, retries: int = 0
+        ) -> None:
+            del extension_id, extension_pack, retries
+            raise RuntimeError("boom")
+
+    async def _no_sleep(_seconds: int) -> None:
+        return None
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
+    monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(
+        OfflineBundleImportExecutionError,
+        match="Offline bundle import failed",
+    ):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            target_path=str(tmp_path / "cache"),
+        )
 
 
 def test_import_offline_bundle_raises_when_manifest_missing(tmp_path: Path) -> None:

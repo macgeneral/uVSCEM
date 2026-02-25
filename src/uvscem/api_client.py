@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 from pathlib import Path
 from typing import Any
@@ -11,14 +10,28 @@ from typing import Any
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from uvscem.internal_config import (
+    DEFAULT_USER_AGENT,
+    HTTP_REQUEST_TIMEOUT_SECONDS,
+    HTTP_RETRY_ALLOWED_METHODS,
+    HTTP_RETRY_BACKOFF_FACTOR,
+    HTTP_RETRY_STATUS_FORCELIST,
+    HTTP_RETRY_TOTAL,
+    MAX_INSTALL_RETRIES,
+)
+from uvscem.marketplace import (
+    build_extension_query_body,
+    build_query_flags,
+    shape_extension_metadata_versions,
+)
 from uvscem.vscode_paths import resolve_vscode_root
 
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 
 # attempt to install an extension a maximum of three times
-max_retries = 3
-user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
+max_retries = MAX_INSTALL_RETRIES
+user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
@@ -52,45 +65,20 @@ class CodeAPIManager(object):
             "Accept": f"application/json; charset=utf-8; api-version={api_version}"
         }
 
-        flags = 0
-        if include_versions:
-            flags |= 0x1
-
-        if include_files:
-            flags |= 0x2
-
-        if include_category_and_tags:
-            flags |= 0x4
-
-        if include_shared_accounts:
-            flags |= 0x8
-
-        if include_shared_accounts:
-            flags |= 0x8
-
-        if include_version_properties:
-            flags |= 0x10
-
-        if exclude_non_validated:
-            flags |= 0x20
-
-        if include_installation_targets:
-            flags |= 0x40
-
-        if include_asset_uri:
-            flags |= 0x80
-
-        if include_statistics:
-            flags |= 0x100
-
-        if include_latest_version_only:
-            flags |= 0x200
-
-        if unpublished:
-            flags |= 0x1000
-
-        if include_name_conflict_info:
-            flags |= 0x8000
+        flags = build_query_flags(
+            include_versions=include_versions,
+            include_files=include_files,
+            include_category_and_tags=include_category_and_tags,
+            include_shared_accounts=include_shared_accounts,
+            include_version_properties=include_version_properties,
+            exclude_non_validated=exclude_non_validated,
+            include_installation_targets=include_installation_targets,
+            include_asset_uri=include_asset_uri,
+            include_statistics=include_statistics,
+            include_latest_version_only=include_latest_version_only,
+            unpublished=unpublished,
+            include_name_conflict_info=include_name_conflict_info,
+        )
 
         for page in range(1, max_page + 1):
             """
@@ -119,27 +107,18 @@ class CodeAPIManager(object):
                 Ascending = 1,
                 Descending = 2
             """
-            body = {
-                "filters": [
-                    {
-                        "criteria": [
-                            {"filterType": 8, "value": "Microsoft.VisualStudio.Code"},
-                            {"filterType": 7, "value": extension_id},
-                        ],
-                        "pageNumber": page,
-                        "pageSize": page_size,
-                        "sortBy": 0,
-                        "sortOrder": 2,
-                    }
-                ],
-                "assetTypes": [],
-                "flags": flags,
-            }
+            body = build_extension_query_body(
+                extension_id=extension_id,
+                page_number=page,
+                page_size=page_size,
+                flags=flags,
+            )
 
             r = self.session.post(
                 "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery",
                 json=body,
                 headers=headers,
+                timeout=HTTP_REQUEST_TIMEOUT_SECONDS,
             )
             r.raise_for_status()
             response = r.json()
@@ -164,116 +143,15 @@ class CodeAPIManager(object):
             extension_id=extension_id,
             include_latest_version_only=include_latest_version_only,
         ):
-            result: list = []
-            extension_name: str = str(extension.get("extensionName", ""))
-            extensions_versions: list = list(extension.get("versions", []))
-            extensions_statistics: dict = dict(
-                {
-                    (item.get("statisticName"), item.get("value"))
-                    for item in extension["statistics"]
-                }
+            result = shape_extension_metadata_versions(
+                extension=extension,
+                extension_id=extension_id,
+                include_latest_stable_version_only=include_latest_stable_version_only,
+                requested_version=requested_version,
+                vscode_root=vscode_root,
             )
-            extension_publisher_username: str = str(
-                extension.get("publisher", {}).get("publisherName", "")
-            )
-
-            for extension_version_info in extensions_versions:
-                extension_version: str = str(extension_version_info.get("version", ""))
-                if requested_version and extension_version != requested_version:
-                    continue
-                extension_properties: dict = dict(
-                    {
-                        (item.get("key"), item.get("value"))
-                        for item in extension_version_info.get("properties", {})
-                    }
-                )
-                extension_dependencies: list = [
-                    x
-                    for x in str(
-                        extension_properties.get(
-                            "Microsoft.VisualStudio.Code.ExtensionDependencies", ""
-                        )
-                    ).split(",")
-                    if x
-                ]
-                extension_packs: list = [
-                    x
-                    for x in str(
-                        extension_properties.get(
-                            "Microsoft.VisualStudio.Code.ExtensionPack", ""
-                        )
-                    ).split(",")
-                    if x
-                ]
-                extension_files: dict = dict(
-                    {
-                        (item.get("assetType"), item.get("source"))
-                        for item in extension_version_info.get("files")
-                    }
-                )
-                extension_download_url: str = str(
-                    extension_files.get(
-                        "Microsoft.VisualStudio.Services.VSIXPackage", ""
-                    )
-                )
-                extension_signature: str = str(
-                    extension_files.get(
-                        "Microsoft.VisualStudio.Services.VsixSignature", ""
-                    )
-                )
-                is_pre_release: bool = extension_properties.get(
-                    "Microsoft.VisualStudio.Code.PreRelease", False
-                )
-                # skip pre-release versions
-                if is_pre_release and include_latest_stable_version_only:
-                    continue
-
-                extension_path = vscode_root.joinpath(
-                    f"extensions/{extension_id}-{extension_version}"
-                )
-                result.append(
-                    {
-                        "publisher": extension_publisher_username,
-                        "name": extension_name,
-                        "version": extension_version,
-                        "dependencies": extension_dependencies,
-                        "extension_pack": extension_packs,
-                        "url": extension_download_url,
-                        "signature": extension_signature,
-                        "statistics": extensions_statistics,
-                        "installation_metadata": {
-                            "identifier": {"id": extension_id},
-                            "version": extension_version,
-                            "location": {
-                                "$mid": 1,
-                                "path": f"{extension_path}",
-                                "scheme": "file",
-                            },
-                            "relativeLocation": f"{extension_id}-{extension_version}",
-                            "metadata": {
-                                "installedTimestamp": int(
-                                    (
-                                        datetime.datetime.now(datetime.timezone.utc)
-                                        - datetime.datetime(
-                                            1970, 1, 1, tzinfo=datetime.timezone.utc
-                                        )
-                                    ).total_seconds()
-                                    * 1000
-                                ),
-                                "id": extension["extensionId"],
-                                "publisherDisplayName": extension["publisher"][
-                                    "displayName"
-                                ],
-                                "publisherId": extension["publisher"]["publisherId"],
-                                "isPreReleaseVersion": is_pre_release,
-                            },
-                        },
-                    }
-                )
-                logger.debug(f"- {extension_download_url}")
-
-                if include_latest_stable_version_only:
-                    break
+            for item in result:
+                logger.debug(f"- {item.get('url', '')}")
             extensions[extension_id] = result
         return extensions
 
@@ -338,10 +216,10 @@ class CodeAPIManager(object):
 
     def __init__(self):
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
+            total=HTTP_RETRY_TOTAL,
+            backoff_factor=HTTP_RETRY_BACKOFF_FACTOR,
+            status_forcelist=HTTP_RETRY_STATUS_FORCELIST,
+            allowed_methods=HTTP_RETRY_ALLOWED_METHODS,
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session = requests.Session()

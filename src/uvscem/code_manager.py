@@ -10,14 +10,15 @@ import socket
 import tempfile
 from pathlib import Path
 
+from uvscem.internal_config import DEFAULT_USER_AGENT, MAX_INSTALL_RETRIES
+from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
+
 # for parsing devcontainer.json (if it includes comments etc.)
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
-from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
-
 # attempt to install an extension a maximum of three times
-max_retries = 3
-user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
+max_retries = MAX_INSTALL_RETRIES
+user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
