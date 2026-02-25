@@ -1,76 +1,62 @@
 name: Publish
 
 on:
-  workflow_run:
-    workflows: ["Test"]
-    types: [completed]
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
 
 jobs:
-  check:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-    outputs:
-      should_publish: ${{ steps.release_tag.outputs.should_publish }}
-      release_tag: ${{ steps.release_tag.outputs.release_tag }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-
-      - name: Resolve release tag from tested commit
-        id: release_tag
-        run: |
-          TAGS="$(git tag --points-at "${{ github.event.workflow_run.head_sha }}" --list 'v*.*.*')"
-          TAG_COUNT="$(echo "${TAGS}" | sed '/^$/d' | wc -l | tr -d ' ')"
-
-          if [[ "${TAG_COUNT}" -eq 0 ]]; then
-            echo "No release tag found on tested commit; skipping publish."
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ "${TAG_COUNT}" -gt 1 ]]; then
-            echo "Expected exactly one release tag on tested commit, found:"
-            echo "${TAGS}"
-            exit 1
-          fi
-
-          RELEASE_TAG="$(echo "${TAGS}" | sed -n '1p')"
-          echo "Resolved release tag: ${RELEASE_TAG}"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "should_publish=true" >> "$GITHUB_OUTPUT"
-
   publish:
-    needs: check
-    if: ${{ needs.check.outputs.should_publish == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-
       - name: Validate semantic version tag
         run: |
           SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
-          RELEASE_TAG="${{ needs.check.outputs.release_tag }}"
-          if ! [[ "${RELEASE_TAG}" =~ ${SEMVER_REGEX} ]]; then
-            echo "Tag ${RELEASE_TAG} is not a valid version tag (expected v<major>.<minor>.<patch> with only numeric parts)"
+          if ! [[ "${{ github.ref_name }}" =~ ${SEMVER_REGEX} ]]; then
+            echo "Tag ${{ github.ref_name }} is not a valid version tag (expected v<major>.<minor>.<patch> with only numeric parts)"
             exit 1
           fi
+
+      - name: Wait for tests to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Waiting for Test workflow to complete for ${{ github.sha }}..."
+          for attempt in $(seq 1 20); do
+            STATUS=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
+              --jq '[.workflow_runs[] | select(.name == "Test")]
+                    | if map(select(.conclusion == "success")) | length > 0 then "success"
+                      elif map(select(.status == "completed")) | length > 0 then "failure"
+                      else "pending"
+                      end')
+
+            if [[ "${STATUS}" == "success" ]]; then
+              echo "Tests passed."
+              exit 0
+            elif [[ "${STATUS}" == "failure" ]]; then
+              echo "Tests did not pass for commit ${{ github.sha }}."
+              exit 1
+            fi
+
+            echo "Attempt ${attempt}/20: no completed test run yet, retrying in 30s..."
+            sleep 30
+          done
+          echo "Timed out waiting for tests to complete."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Verify tag signature
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
         run: |
           python - <<'PY'
           import json
@@ -79,7 +65,7 @@ jobs:
 
           token = os.environ["GH_TOKEN"]
           repo = "${{ github.repository }}"
-          tag = os.environ["RELEASE_TAG"]
+          tag = "${{ github.ref_name }}"
 
           def api_get(url):
               req = urllib.request.Request(
@@ -143,9 +129,25 @@ jobs:
         with:
           attestations: true
 
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          PREV_TAG="$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)"
+          if [[ -n "${PREV_TAG}" ]]; then
+            RANGE="${PREV_TAG}..${{ github.ref_name }}"
+          else
+            RANGE="${{ github.ref_name }}"
+          fi
+          NOTES="$(git log "${RANGE}" --pretty=format:'- %s (%h)' --no-merges)"
+          {
+            echo 'notes<<EOF'
+            echo "${NOTES}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
-          tag_name: ${{ needs.check.outputs.release_tag }}
-          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.release_notes.outputs.notes }}
           make_latest: true
