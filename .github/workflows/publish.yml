@@ -122,7 +122,7 @@ jobs:
         run: uv sync --frozen --group publish
 
       - name: Strip CI badges from README for PyPI
-        run: sed -i '/^\[!\[Lint\]/,/astral-sh\/ty/d' README.md
+        run: sed -i '3,/^[[:space:]]*$/d' README.md
 
       - name: Build distributions
         run: uv build

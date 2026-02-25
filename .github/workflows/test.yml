@@ -7,9 +7,36 @@ on:
   workflow_dispatch:
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run-tests: ${{ steps.check.outputs.run-tests }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Determine relevant file changes
+        id: check
+        run: |
+          git fetch --all --quiet
+          FILES=$(git show --name-only --pretty="" HEAD)
+          RUN_TESTS=false
+          while IFS= read -r FILE; do
+            case "${FILE}" in
+              *.py | uv.lock)
+                RUN_TESTS=true
+                break
+                ;;
+            esac
+          done <<< "${FILES}"
+          echo "run-tests=${RUN_TESTS}" >> "$GITHUB_OUTPUT"
+
   tests:
     name: ${{ matrix.os.name }} / Python ${{ matrix.python-version }}
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    needs: detect-changes
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.run-tests == 'true') }}
     runs-on: ${{ matrix.os.runner }}
     strategy:
       fail-fast: true

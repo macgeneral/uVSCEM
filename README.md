@@ -1,9 +1,9 @@
 # uVSCEM
 
-![PyPI - Version](https://img.shields.io/pypi/v/uvscem)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/uvscem)
-![PyPI - Implementation](https://img.shields.io/pypi/implementation/uvscem)
-![PyPI - License](https://img.shields.io/pypi/l/uvscem)  
+[![PyPI - Version](https://img.shields.io/pypi/v/uvscem)](https://pypi.org/project/uvscem/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/uvscem)](https://pypi.org/project/uvscem/)
+[![PyPI - Implementation](https://img.shields.io/pypi/implementation/uvscem)](https://pypi.org/project/uvscem/)
+[![PyPI - License](https://img.shields.io/pypi/l/uvscem)](LICENSE)  
 [![Lint](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/lint.yml)
 [![Test](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml/badge.svg)](https://github.com/macgeneral/uVSCEM/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/macgeneral/uVSCEM/branch/main/graph/badge.svg)](https://codecov.io/gh/macgeneral/uVSCEM)
