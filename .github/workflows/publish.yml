@@ -1,0 +1,66 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate semantic version tag
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match vX.Y.Z"
+            exit 1
+          fi
+
+      - name: Import tag signing key
+        env:
+          PYPI_TAG_SIGNING_PUBLIC_KEY: ${{ secrets.PYPI_TAG_SIGNING_PUBLIC_KEY }}
+        run: |
+          if [[ -z "${PYPI_TAG_SIGNING_PUBLIC_KEY}" ]]; then
+            echo "Missing required secret: PYPI_TAG_SIGNING_PUBLIC_KEY"
+            exit 1
+          fi
+          echo "${PYPI_TAG_SIGNING_PUBLIC_KEY}" | gpg --batch --import
+
+      - name: Verify tag signature
+        env:
+          EXPECTED_SIGNER: ${{ vars.PYPI_TAG_SIGNER }}
+        run: |
+          VERIFY_OUTPUT="$(git tag -v "${GITHUB_REF_NAME}" 2>&1)"
+          echo "${VERIFY_OUTPUT}"
+
+          echo "${VERIFY_OUTPUT}" | grep -q "Good signature from"
+
+          if [[ -n "${EXPECTED_SIGNER}" ]]; then
+            echo "${VERIFY_OUTPUT}" | grep -Fq "${EXPECTED_SIGNER}"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          version: "0.10.6"
+          checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0

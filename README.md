@@ -42,6 +42,30 @@ uv run ruff check .
 uv run ty check
 ```
 
+## CI and release workflows
+
+This repository uses three GitHub Actions workflows:
+
+- `lint.yml`: runs Ruff and Ty.
+- `test.yml`: runs after successful lint and executes tests on Python `3.10` to `3.14` (unit tests first, then slow integration tests).
+- `publish.yml`: runs only for tags matching `vX.Y.Z`, validates tag format, verifies PGP signature, builds, and publishes to PyPI.
+
+Workflows install `uv` via `astral-sh/setup-uv` pinned to an immutable commit SHA (not via `pip install uv`) and pin a specific `uv` version with checksum verification.
+
+### Signed-tag release requirements
+
+Configure the following repository settings for `publish.yml`:
+
+- Secret: `PYPI_TAG_SIGNING_PUBLIC_KEY` (ASCII-armored public key used to verify release tags).
+- Variable (optional): `PYPI_TAG_SIGNER` (expected signer identity substring from `git tag -v` output).
+
+### Dependency update automation
+
+Dependabot is configured in `.github/dependabot.yml` to create update PRs for:
+
+- Python dependencies declared in `pyproject.toml` (managed with `uv`).
+- GitHub Actions workflow dependencies.
+
 ## Installing `vsce-sign` without Node.js
 
 To verify marketplace extension signatures in hosts/containers that do not ship Node.js, uVSCEM provides a small bootstrap helper that downloads the correct platform-specific `@vscode/vsce-sign-*` binary package from npm registry, verifies its integrity hash, and installs the binary.

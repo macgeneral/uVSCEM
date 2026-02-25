@@ -1,0 +1,40 @@
+name: Test
+
+on:
+  workflow_run:
+    workflows: ["Lint"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          version: "0.10.6"
+          checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Unit tests
+        run: uv run pytest src
+
+      - name: Integration tests
+        run: uv run pytest src/tests/test_integration_slow.py --slow --only-slow --no-cov
