@@ -14,6 +14,11 @@
 #   commit that touched a pattern-matching file and has a successful <workflow>
 #   run, and writes run-id=<id> to $GITHUB_OUTPUT.
 #
+# Mode 3 — find exact run ID:
+#   check-build-needed.sh --find-run-id-exact <sha> <repo> <workflow>
+#   Finds a successful <workflow> run for the exact <sha> only and writes
+#   run-id=<id> to $GITHUB_OUTPUT.
+#
 set -euo pipefail
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -84,6 +89,22 @@ cmd_find_run_id() {
   return 1
 }
 
+cmd_find_run_id_exact() {
+  local exact_sha="$1" repo="$2" workflow="$3"
+  local run_id
+
+  git fetch --all --quiet
+  run_id=$(query_run_id "${exact_sha}" "${repo}" "${workflow}")
+  if [[ -n "${run_id}" ]]; then
+    echo "Found successful ${workflow} run ${run_id} at exact SHA ${exact_sha}."
+    echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
+    return 0
+  fi
+
+  echo "No successful ${workflow} run found at exact SHA ${exact_sha}." >&2
+  return 1
+}
+
 # ── Mode 1: skip decision ────────────────────────────────────────────────────
 
 output_skip()  { echo "skip=true"  >> "$GITHUB_OUTPUT"; echo "$1"; }
@@ -121,6 +142,9 @@ cmd_decide_skip() {
 if [[ "${1:-}" == '--find-run-id' ]]; then
   shift
   cmd_find_run_id "$@"
+elif [[ "${1:-}" == '--find-run-id-exact' ]]; then
+  shift
+  cmd_find_run_id_exact "$@"
 else
   cmd_decide_skip "$@"
 fi

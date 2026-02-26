@@ -129,11 +129,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash scripts/check-build-needed.sh --find-run-id \
-            "${{ github.sha }}" \
-            "${{ github.repository }}" \
-            "Build" \
-            "*.py" "pyproject.toml" "uv.lock"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            echo "Dry-run mode: allowing fallback to latest compatible historical Build run."
+            bash scripts/check-build-needed.sh --find-run-id \
+              "${{ github.sha }}" \
+              "${{ github.repository }}" \
+              "Build" \
+              "*"
+          else
+            echo "Publish mode: requiring successful Build run for exact SHA."
+            bash scripts/check-build-needed.sh --find-run-id-exact \
+              "${{ github.sha }}" \
+              "${{ github.repository }}" \
+              "Build"
+          fi
+
+      - name: Log selected build run ID
+        run: |
+          echo "Selected Build run ID: ${{ steps.find-build.outputs.run-id }}"
 
       - name: Extract build binaries
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
