@@ -129,6 +129,21 @@ jobs:
           # remove injected default.gitignore from upload-artifact
           find dist-binaries -maxdepth 1 -name '*.gitignore' -delete
 
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist-binaries
+          sha256sum uvscem-* > checksums.sha256
+          cat checksums.sha256
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+
+      - name: Sign binaries with Sigstore
+        run: |
+          for bin in dist-binaries/uvscem-*; do
+            cosign sign-blob --yes --bundle "${bin}.bundle" "${bin}"
+          done
+
       - name: Generate release notes
         id: release_notes
         run: |

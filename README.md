@@ -61,6 +61,26 @@ chmod +x ./uvscem
 > xattr -d com.apple.quarantine ./uvscem
 > ```
 
+### Verifying binary integrity
+
+Each release includes a `checksums.sha256` file and per-binary [Sigstore](https://www.sigstore.dev/) bundles (e.g. `uvscem-linux-x64.bundle`).
+
+Verify the checksum:
+
+```bash
+sha256sum -c checksums.sha256 --ignore-missing
+```
+
+Verify the Sigstore signature (requires [cosign](https://github.com/sigstore/cosign)):
+
+```bash
+cosign verify-blob \
+  --bundle uvscem-linux-x64.bundle \
+  --certificate-identity-regexp "https://github.com/macgeneral/uVSCEM/.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  uvscem-linux-x64
+```
+
 ### Python package
 
 ```bash

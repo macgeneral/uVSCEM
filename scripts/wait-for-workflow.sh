@@ -12,12 +12,11 @@ echo "Waiting for '${WORKFLOW}' workflow to complete for ${SHA}..."
 
 for attempt in $(seq 1 "${ATTEMPTS}"); do
   STATUS=$(gh api "/repos/${REPO}/actions/runs?head_sha=${SHA}" \
-    --jq --arg name "${WORKFLOW}" '
-      [.workflow_runs[] | select(.name == $name)]
-      | if map(select(.conclusion == "success")) | length > 0 then "success"
-        elif map(select(.status == "completed" and .conclusion != "success")) | length > 0 then "failure"
-        else "pending"
-        end')
+    --jq "[.workflow_runs[] | select(.name == \"${WORKFLOW}\")]
+      | if map(select(.conclusion == \"success\")) | length > 0 then \"success\"
+        elif map(select(.status == \"completed\" and .conclusion != \"success\")) | length > 0 then \"failure\"
+        else \"pending\"
+        end")
 
   if [[ "${STATUS}" == "success" ]]; then
     echo "'${WORKFLOW}' workflow succeeded."
