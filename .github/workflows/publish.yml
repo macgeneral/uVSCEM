@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run full publish pipeline without creating a GitHub release or publishing to PyPI'
+        type: boolean
+        default: true
 
 jobs:
   publish:
@@ -14,6 +20,7 @@ jobs:
 
     steps:
       - name: Validate semantic version tag
+        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
         run: |
           SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
           if ! [[ "${{ github.ref_name }}" =~ ${SEMVER_REGEX} ]]; then
@@ -27,6 +34,20 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Trigger upstream workflows for manual runs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run lint.yml --ref "${{ github.ref_name }}"
+          gh workflow run build.yml --ref "${{ github.ref_name }}" -f force=true
+
+      - name: Wait for lint to pass
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/wait-for-workflow.sh "Lint" "${{ github.sha }}" "${{ github.repository }}"
+
       - name: Wait for tests to pass
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,6 +59,7 @@ jobs:
         run: bash scripts/wait-for-workflow.sh "Build" "${{ github.sha }}" "${{ github.repository }}"
 
       - name: Verify tag signature
+        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -187,7 +209,22 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Write dry-run release notes summary
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        run: |
+          {
+            echo "## Dry-run release notes preview"
+            echo
+            echo "- Ref: \\`${{ github.ref_name }}\\`"
+            echo "- Commit: \\`${{ github.sha }}\\`"
+            echo
+            echo "### Notes"
+            echo
+            echo "${{ steps.release_notes.outputs.notes }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Create GitHub Release
+        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ github.ref_name }}
@@ -197,6 +234,7 @@ jobs:
           make_latest: true
 
       - name: Publish to PyPI
+        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           attestations: true
