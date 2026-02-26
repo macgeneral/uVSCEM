@@ -114,15 +114,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-            --jq '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")] | .[0].id')
-          mkdir -p dist-binaries
-          gh run download "${RUN_ID}" --repo "${{ github.repository }}" --dir dist-binaries
-          # flatten: each artifact is in its own subdirectory, all filenames are unique
-          find dist-binaries -mindepth 2 -type f -exec mv -t dist-binaries {} +
-          find dist-binaries -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
-          # remove injected default.gitignore from upload-artifact
-          find dist-binaries -maxdepth 1 -name '*.gitignore' -delete
+          echo "BUILD_RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
+            --jq '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")] | .[0].id')" \
+            >> "$GITHUB_ENV"
+
+      - name: Extract build binaries
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          run-id: ${{ env.BUILD_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: dist-binaries
+          merge-multiple: true
 
       - name: Generate SHA-256 checksums
         run: |
