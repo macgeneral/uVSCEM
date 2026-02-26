@@ -37,6 +37,32 @@ The primary tested target is still Linux, especially DevContainer and VS Code Re
 
 ## Install
 
+### Pre-built binaries (since v1.0.4)
+
+Self-contained binaries compiled with [Nuitka](https://nuitka.net) with no Python requirement are available on the [Releases](https://github.com/macgeneral/uVSCEM/releases) page for the following platforms:
+
+| Platform        | File                    |
+|-----------------|-------------------------|
+| Linux x64       | `uvscem-linux-x64`      |
+| Linux arm64     | `uvscem-linux-arm64`    |
+| macOS arm64     | `uvscem-macos-arm64`    |
+| Windows x64     | `uvscem-windows-x64`    |
+
+Download the binary for your platform, make it executable, and run it directly:
+
+```bash
+# Linux / macOS
+chmod +x ./uvscem
+./uvscem install --config-name ./devcontainer.json
+```
+
+> **macOS note:** The binary is not code-signed. To remove the quarantine flag after downloading:
+> ```bash
+> xattr -d com.apple.quarantine ./uvscem
+> ```
+
+### Python package
+
 ```bash
 pip install uvscem
 ```
@@ -83,6 +109,20 @@ Export an offline bundle:
 uvscem export --config-name ./devcontainer.json --bundle-path ./uvscem-offline-bundle
 ```
 
+By default the bundle includes the `vsce-sign` binary for the current platform only. To bundle binaries for all platforms (useful when sharing the bundle across machines):
+
+```bash
+uvscem export --config-name ./devcontainer.json --vsce-sign-targets all
+```
+
+Or specify individual targets:
+
+```bash
+uvscem export --config-name ./devcontainer.json --vsce-sign-targets linux-x64,linux-arm64,darwin-arm64,win32-x64
+```
+
+Supported `--vsce-sign-targets` values: `current` (default), `all`, or a comma-separated list of `linux-x64`, `linux-arm64`, `linux-arm`, `alpine-x64`, `alpine-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`, `win32-arm64`.
+
 Import an offline bundle without network access:
 
 ```bash
@@ -114,6 +154,6 @@ Development setup, testing, and release details are in [CONTRIBUTING.md](CONTRIB
 
 ## A big thank you to the following people
 
-- [Jossef Harush Kadouri](http://jossef.com/) for [this GitHub Gist](https://gist.github.com/jossef/8d7681ac0c7fd28e93147aa5044bc129) on how to query the undocumented VisualStudio Code Marketplace API, which I used as blueprint for [`api_client.py`](https://github.com/macgeneral/uVSCEM/blob/main/src/uvscem/api_client.py).
+- [Jossef Harush Kadouri](http://jossef.com/) for [this GitHub Gist](https://gist.github.com/jossef/8d7681ac0c7fd28e93147aa5044bc129) on how to query the undocumented VisualStudio Code Marketplace API, which I used as blueprint for [`marketplace.py`](https://github.com/macgeneral/uVSCEM/blob/main/src/uvscem/marketplace.py).
 - [Ian McKellar](https://ianloic.com) for his blog post ["VSCode Remote and the command line"](https://ianloic.com/2021/02/16/vscode-remote-and-the-command-line/)  (notable mention: Lazy Ren@Stackoverflow for [this answer](https://stackoverflow.com/a/67916473) pointing me in this direction).
 - [Michael Petrov](http://michaelpetrov.com) for [this answer](https://stackoverflow.com/a/62277798) on StackOverflow on how to test if a socket is closed in python.

@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os.name }}
+    runs-on: ${{ matrix.os.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - name: Linux (x64)
+            runner: ubuntu-latest
+            artifact: uvscem-linux-x64
+            bin: uvscem
+          - name: Linux (arm64)
+            runner: ubuntu-24.04-arm
+            artifact: uvscem-linux-arm64
+            bin: uvscem
+          - name: macOS (arm64)
+            runner: macos-latest
+            artifact: uvscem-macos-arm64
+            bin: uvscem
+          - name: Windows (x64)
+            runner: windows-latest
+            artifact: uvscem-windows-x64
+            bin: uvscem.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.10"
+
+      - name: Install runtime dependencies
+        run: pip install .
+
+      - name: Build binary
+        uses: Nuitka/Nuitka-Action@b24f9b7859f1022afcfad039eb8b8ac3ae299e39 # v1.3
+        with:
+          script-name: src/uvscem/__main__.py
+          output-file: uvscem
+          mode: onefile
+          include-package: uvscem
+
+      - name: Smoke test binary
+        shell: bash
+        run: |
+          bin="build/${{ matrix.os.bin }}"
+          chmod +x "$bin" 2>/dev/null || true
+
+          # --help should succeed
+          "$bin" --help
+
+          # missing config/bundle should fail cleanly (exit 1, no traceback)
+          ! "$bin" install --config-name __no_such_file__.json
+          ! "$bin" export --config-name __no_such_file__.json
+          ! "$bin" import --bundle-path __no_such_bundle__
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.os.artifact }}
+          path: |
+            build/uvscem
+            build/uvscem.exe
+          if-no-files-found: error

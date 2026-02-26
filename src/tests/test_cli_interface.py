@@ -169,6 +169,16 @@ def test_cli_reports_argument_errors(
     assert "error" in error_text
 
 
+def test_main_module_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    import runpy
+
+    extension_manager = _import_extension_manager(monkeypatch)
+    called: list[bool] = []
+    monkeypatch.setattr(extension_manager, "main", lambda: called.append(True))
+    runpy.run_module("uvscem", run_name="__main__", alter_sys=False)
+    assert called == [True]
+
+
 def test_install_missing_config_exits_cleanly(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -26,7 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "Waiting for Test workflow to complete for ${{ github.sha }}..."
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 50); do
             STATUS=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
               --jq '[.workflow_runs[] | select(.name == "Test")]
                     | if map(select(.conclusion == "success")) | length > 0 then "success"
@@ -46,6 +46,34 @@ jobs:
             sleep 30
           done
           echo "Timed out waiting for tests to complete."
+          exit 1
+
+      - name: Wait for build binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Waiting for Build workflow to complete for ${{ github.sha }}..."
+          for attempt in $(seq 1 50); do
+            STATUS=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
+              --jq '[.workflow_runs[] | select(.name == "Build")]
+                    | if map(select(.conclusion == "success")) | length > 0 then "success"
+                      elif map(select(.status == "in_progress" or .status == "queued")) | length > 0 then "pending"
+                      elif map(select(.status == "completed")) | length > 0 then "failure"
+                      else "pending"
+                      end')
+
+            if [[ "${STATUS}" == "success" ]]; then
+              echo "Build succeeded."
+              exit 0
+            elif [[ "${STATUS}" == "failure" ]]; then
+              echo "Build did not succeed for commit ${{ github.sha }}."
+              exit 1
+            fi
+
+            echo "Attempt ${attempt}/30: build not yet complete, retrying in 30s..."
+            sleep 30
+          done
+          echo "Timed out waiting for build to complete."
           exit 1
 
       - name: Checkout
@@ -132,6 +160,18 @@ jobs:
         with:
           attestations: true
 
+      - name: Download build binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
+            --jq '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")] | .[0].id')
+          mkdir -p dist-binaries
+          gh run download "${RUN_ID}" --repo "${{ github.repository }}" --dir dist-binaries
+          # flatten: each artifact is in its own subdirectory
+          find dist-binaries -mindepth 2 -type f -exec mv -t dist-binaries {} +
+          find dist-binaries -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+
       - name: Generate release notes
         id: release_notes
         run: |
@@ -154,5 +194,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.release_notes.outputs.notes }}
           generate_release_notes: true
-          files: dist/*
+          files: |
+            dist/*
+            dist-binaries/*
           make_latest: true
