@@ -116,6 +116,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/check-build-needed.sh --find-run-id \
+            "${{ github.sha }}" \
             "${{ github.repository }}" \
             "Build" \
             "*.py" "pyproject.toml" "uv.lock"
@@ -131,6 +132,7 @@ jobs:
       - name: Generate SHA-256 checksums
         run: |
           cd dist-binaries
+          find . -maxdepth 1 ! -name 'uvscem-*' ! -name '.' -delete
           sha256sum uvscem-* > checksums.sha256
           cat checksums.sha256
 

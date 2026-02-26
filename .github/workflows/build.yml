@@ -108,3 +108,4 @@ jobs:
           name: ${{ matrix.os.artifact }}
           path: build/${{ matrix.os.bin }}
           if-no-files-found: error
+          retention-days: 30

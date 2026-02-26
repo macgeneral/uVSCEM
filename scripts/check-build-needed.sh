@@ -8,10 +8,11 @@
 #   force=true bypasses both checks.
 #
 # Mode 2 — find run ID:
-#   check-build-needed.sh --find-run-id <repo> <workflow> <pattern> [pattern...]
-#   Walks git log backwards from HEAD, finds the most recent commit that touched
-#   a pattern-matching file and has a successful <workflow> run, then writes
-#   run-id=<id> to $GITHUB_OUTPUT.
+#   check-build-needed.sh --find-run-id <sha> <repo> <workflow> <pattern> [pattern...]
+#   First checks <sha> unconditionally (covers force-rebuilds and workflow file
+#   changes). Then walks git log backwards from HEAD, finds the most recent
+#   commit that touched a pattern-matching file and has a successful <workflow>
+#   run, and writes run-id=<id> to $GITHUB_OUTPUT.
 #
 set -euo pipefail
 
@@ -31,22 +32,43 @@ commit_touches_patterns() {
   return 1
 }
 
-# Prints the run ID of the latest successful <workflow> run for <sha>, or "".
+# Prints the run ID of the latest successful <workflow> run for <sha> whose
+# artifacts were created no earlier than the commit date minus 1 day, or "".
 query_run_id() {
   local sha="$1" repo="$2" workflow="$3"
+  # Compute earliest acceptable creation time: commit date minus 1-day buffer.
+  local commit_ts earliest
+  commit_ts=$(git log -1 --format=%ct "${sha}" 2>/dev/null || echo 0)
+  earliest=$(date -u -d "@$((commit_ts - 86400))" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -r "$((commit_ts - 86400))" '+%Y-%m-%dT%H:%M:%SZ')  # macOS fallback
   gh api "/repos/${repo}/actions/runs?head_sha=${sha}&status=success" \
-    --jq '[.workflow_runs[] | select(.name == "'"${workflow}"'")] | .[0].id // empty'
+    --jq '[.workflow_runs[] | select(.name == "'"${workflow}"'" and .created_at >= "'"${earliest}"'")] | .[0].id // empty'
 }
 
 # ── Mode 2: --find-run-id ────────────────────────────────────────────────────
 
 cmd_find_run_id() {
-  local repo="$1" workflow="$2"; shift 2
+  local exact_sha="$1" repo="$2" workflow="$3"; shift 3
   local patterns=("$@")
   local sha run_id
 
   git fetch --all --quiet
+
+  # Always check the exact SHA first — covers force-rebuilds, workflow-file
+  # changes, and any other case where the build ran without touching the
+  # tracked source patterns.
+  run_id=$(query_run_id "${exact_sha}" "${repo}" "${workflow}")
+  if [[ -n "${run_id}" ]]; then
+    echo "Found successful ${workflow} run ${run_id} at exact SHA ${exact_sha}."
+    echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
+    return 0
+  fi
+  echo "No successful ${workflow} run at exact SHA ${exact_sha}, scanning history..."
+
+  # Fall back: walk history for the most recent commit that touched a relevant
+  # file and has a successful build run.
   while IFS= read -r sha; do
+    [[ "${sha}" == "${exact_sha}" ]] && continue  # already checked above
     if commit_touches_patterns "${sha}" "${patterns[@]}"; then
       run_id=$(query_run_id "${sha}" "${repo}" "${workflow}")
       if [[ -n "${run_id}" ]]; then
@@ -54,7 +76,7 @@ cmd_find_run_id() {
         echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
         return 0
       fi
-      echo "Commit ${sha} touched relevant files but has no successful ${workflow} run yet."
+      echo "Commit ${sha} touched relevant files but has no successful ${workflow} run."
     fi
   done <<< "$(git log --format=%H)"
 
