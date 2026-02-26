@@ -16,26 +16,29 @@ jobs:
     name: Check for existing build
     runs-on: ubuntu-latest
     outputs:
-      already_built: ${{ steps.check.outputs.already_built }}
+      skip: ${{ steps.decide.outputs.skip }}
     steps:
-      - name: Check for successful build run at this SHA
-        id: check
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check if build is needed
+        id: decide
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          COUNT=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&status=success" \
-            --jq '[.workflow_runs[] | select(.name == "Build")] | length')
-          if [[ "${COUNT}" -gt 0 && "${{ inputs.force }}" != 'true' ]]; then
-            echo "Found existing successful Build run for ${{ github.sha }}, skipping."
-            echo "already_built=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "already_built=false" >> "$GITHUB_OUTPUT"
-          fi
+          bash scripts/check-build-needed.sh \
+            "${{ github.sha }}" \
+            "${{ github.repository }}" \
+            "${{ inputs.force }}" \
+            "Build" \
+            "*.py" "pyproject.toml" "uv.lock" ".github/workflows/build.yml"
 
   build:
     name: ${{ matrix.os.name }}
     needs: check
-    if: needs.check.outputs.already_built != 'true'
+    if: needs.check.outputs.skip != 'true'
     runs-on: ${{ matrix.os.runner }}
     strategy:
       fail-fast: false

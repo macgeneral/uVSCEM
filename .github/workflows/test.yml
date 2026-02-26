@@ -5,38 +5,39 @@ on:
     workflows: ["Lint"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild even if a successful build already exists for this SHA'
+        type: boolean
+        default: false
 
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      run-tests: ${{ steps.check.outputs.run-tests }}
+      skip: ${{ steps.decide.outputs.skip }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      - name: Determine relevant file changes
-        id: check
+      - name: Check if tests are needed
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --all --quiet
-          FILES=$(git show --name-only --pretty="" HEAD)
-          RUN_TESTS=false
-          while IFS= read -r FILE; do
-            case "${FILE}" in
-              *.py | uv.lock)
-                RUN_TESTS=true
-                break
-                ;;
-            esac
-          done <<< "${FILES}"
-          echo "run-tests=${RUN_TESTS}" >> "$GITHUB_OUTPUT"
+          bash scripts/check-build-needed.sh \
+            "${{ github.sha }}" \
+            "${{ github.repository }}" \
+            "${{ inputs.force }}" \
+            "Test" \
+            "*.py" "uv.lock"
 
   tests:
     name: ${{ matrix.os.name }} / Python ${{ matrix.python-version }}
     needs: detect-changes
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.run-tests == 'true') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true') }}
     runs-on: ${{ matrix.os.runner }}
     strategy:
       fail-fast: true

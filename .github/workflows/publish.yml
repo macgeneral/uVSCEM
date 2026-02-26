@@ -110,18 +110,20 @@ jobs:
       - name: Build distributions
         run: uv build
 
-      - name: Download build binaries
+      - name: Find build run ID
+        id: find-build
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "BUILD_RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-            --jq '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")] | .[0].id')" \
-            >> "$GITHUB_ENV"
+          bash scripts/check-build-needed.sh --find-run-id \
+            "${{ github.repository }}" \
+            "Build" \
+            "*.py" "pyproject.toml" "uv.lock"
 
       - name: Extract build binaries
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          run-id: ${{ env.BUILD_RUN_ID }}
+          run-id: ${{ steps.find-build.outputs.run-id }}
           github-token: ${{ github.token }}
           path: dist-binaries
           merge-multiple: true
@@ -165,7 +167,8 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*
-            dist-binaries/*
+            dist-binaries/uvscem-*
+            dist-binaries/checksums.sha256
           make_latest: true
 
       - name: Publish to PyPI
