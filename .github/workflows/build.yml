@@ -15,6 +15,10 @@ jobs:
   check:
     name: Check for existing build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     outputs:
       skip: ${{ steps.decide.outputs.skip }}
     steps:
@@ -40,6 +44,10 @@ jobs:
     needs: check
     if: needs.check.outputs.skip != 'true'
     runs-on: ${{ matrix.os.runner }}
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:

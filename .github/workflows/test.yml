@@ -14,6 +14,10 @@ on:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     outputs:
       skip: ${{ steps.decide.outputs.skip }}
     steps:
@@ -39,6 +43,10 @@ jobs:
     needs: detect-changes
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true') }}
     runs-on: ${{ matrix.os.runner }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: true
       matrix:
@@ -105,19 +113,6 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: uv run pytest --maxfail=0
 
-      - name: Upload coverage artifact
-        if: |
-          runner.os == 'Linux' && matrix.python-version == '3.10' &&
-          (
-            (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main') ||
-            (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
-          )
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: coverage-report
-          path: coverage.xml
-          retention-days: 1
-
       - name: Integration tests
         if: runner.os == 'Linux' && matrix.python-version == '3.10' && github.event_name != 'workflow_dispatch'
         env:
@@ -130,12 +125,70 @@ jobs:
           UVSCEM_INTEGRATION_ARTIFACT_CACHE: ${{ github.workspace }}/.tmp/uvscem-test-artifacts
         run: uv run pytest src --slow --no-cov --maxfail=0
 
+  collect-coverage:
+    needs: [detect-changes, tests]
+    if: |
+      (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true')) &&
+      (
+        (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main') ||
+        (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          version: "0.10.6"
+          checksum: "aaa402e19d14a6b9a4267fcf4ec35380f804c68923525cea67cd6ee05bb4e930"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Cache virtual environment
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Run unit tests for coverage
+        run: uv run pytest
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 1
+
   upload-coverage:
-    needs: tests
+    needs: collect-coverage
     if: |
       (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main') ||
       (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     environment: codecov
     steps:
       - name: Checkout

@@ -10,24 +10,24 @@ on:
         description: 'Run full publish pipeline without creating a GitHub release or publishing to PyPI'
         type: boolean
         default: true
+      force_upstream:
+        description: 'Trigger fresh Lint/Test/Build workflows before publish orchestration'
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  orchestrate:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
-      contents: write
-      id-token: write
+      actions: write
+      contents: read
 
     steps:
-      - name: Validate semantic version tag
-        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
-        run: |
-          SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
-          if ! [[ "${{ github.ref_name }}" =~ ${SEMVER_REGEX} ]]; then
-            echo "Tag ${{ github.ref_name }} is not a valid version tag (expected v<major>.<minor>.<patch> with only numeric parts)"
-            exit 1
-          fi
-
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -35,7 +35,7 @@ jobs:
           fetch-depth: 0
 
       - name: Trigger upstream workflows for manual runs
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_upstream == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -58,55 +58,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/wait-for-workflow.sh "Build" "${{ github.sha }}" "${{ github.repository }}"
 
-      - name: Verify tag signature
-        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import urllib.request
+  prepare:
+    runs-on: ubuntu-latest
+    needs: orchestrate
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
 
-          token = os.environ["GH_TOKEN"]
-          repo = "${{ github.repository }}"
-          tag = "${{ github.ref_name }}"
-
-          def api_get(url):
-              req = urllib.request.Request(
-                  url,
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": f"Bearer {token}",
-                      "User-Agent": "uvscem-publish",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
-              )
-              with urllib.request.urlopen(req) as resp:
-                  return json.load(resp)
-
-          ref_data = api_get(f"https://api.github.com/repos/{repo}/git/refs/tags/{tag}")
-          obj = ref_data["object"]
-
-          if obj["type"] != "tag":
-              raise SystemExit(
-                  f"Tag {tag!r} is not an annotated tag (type={obj['type']!r}). "
-                  "Only signed annotated tags are accepted for publishing."
-              )
-
-          tag_data = api_get(f"https://api.github.com/repos/{repo}/git/tags/{obj['sha']}")
-          verification = tag_data.get("verification", {})
-          verified = verification.get("verified", False)
-          reason = verification.get("reason", "unknown")
-
-          if not verified:
-              raise SystemExit(
-                  f"Tag {tag!r} signature verification failed (reason={reason!r}). "
-                  "Ensure the tag is signed with a GPG key registered on GitHub."
-              )
-
-          print(f"Tag {tag!r} signature verified by GitHub (reason={reason!r}).")
-          PY
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -215,26 +181,111 @@ jobs:
           {
             echo "## Dry-run release notes preview"
             echo
-            echo "- Ref: \\`${{ github.ref_name }}\\`"
-            echo "- Commit: \\`${{ github.sha }}\\`"
+            echo "- Ref: \`${{ github.ref_name }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
             echo
             echo "### Notes"
             echo
             echo "${{ steps.release_notes.outputs.notes }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Persist release notes file
+        run: |
+          printf '%s\n' "${{ steps.release_notes.outputs.notes }}" > release-notes.md
+
+      - name: Upload staged release assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-assets
+          path: |
+            release-assets
+            release-notes.md
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
+    timeout-minutes: 30
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Validate semantic version tag
+        run: |
+          SEMVER_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if ! [[ "${{ github.ref_name }}" =~ ${SEMVER_REGEX} ]]; then
+            echo "Tag ${{ github.ref_name }} is not a valid version tag (expected v<major>.<minor>.<patch> with only numeric parts)"
+            exit 1
+          fi
+
+      - name: Verify tag signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          token = os.environ["GH_TOKEN"]
+          repo = "${{ github.repository }}"
+          tag = "${{ github.ref_name }}"
+
+          def api_get(url):
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "User-Agent": "uvscem-publish",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(req) as resp:
+                  return json.load(resp)
+
+          ref_data = api_get(f"https://api.github.com/repos/{repo}/git/refs/tags/{tag}")
+          obj = ref_data["object"]
+
+          if obj["type"] != "tag":
+              raise SystemExit(
+                  f"Tag {tag!r} is not an annotated tag (type={obj['type']!r}). "
+                  "Only signed annotated tags are accepted for publishing."
+              )
+
+          tag_data = api_get(f"https://api.github.com/repos/{repo}/git/tags/{obj['sha']}")
+          verification = tag_data.get("verification", {})
+          verified = verification.get("verified", False)
+          reason = verification.get("reason", "unknown")
+
+          if not verified:
+              raise SystemExit(
+                  f"Tag {tag!r} signature verification failed (reason={reason!r}). "
+                  "Ensure the tag is signed with a GPG key registered on GitHub."
+              )
+
+          print(f"Tag {tag!r} signature verified by GitHub (reason={reason!r}).")
+          PY
+
+      - name: Download staged release assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-assets
+          path: .
+
       - name: Create GitHub Release
-        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ github.ref_name }}
-          body: ${{ steps.release_notes.outputs.notes }}
+          body_path: release-notes.md
           generate_release_notes: true
           files: release-assets/*
           make_latest: true
 
       - name: Publish to PyPI
-        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run != 'true' }}
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           attestations: true
