@@ -52,13 +52,15 @@ Download the binary for your platform, make it executable, and run it directly:
 
 ```bash
 # Linux / macOS
-chmod +x ./uvscem
-./uvscem install --config-name ./devcontainer.json
+chmod +x ./uvscem-<os>-<arch>
+./uvscem-<os>-<arch> install --config-name ./devcontainer.json
 ```
+
+Replace `<os>-<arch>` with one of: `linux-x64`, `linux-arm64`, `macos-arm64`.
 
 > **macOS note:** The binary is not code-signed. To remove the quarantine flag after downloading:
 > ```bash
-> xattr -d com.apple.quarantine ./uvscem
+> xattr -d com.apple.quarantine ./uvscem-macos-arm64
 > ```
 
 ### Verifying binary integrity
@@ -87,7 +89,13 @@ cosign verify-blob \
 pip install uvscem
 ```
 
-You can also use `uv` or `pipx` if you prefer.
+You can also use `uv` tool mode or `pipx` if you prefer:
+
+```bash
+uv tool install uvscem
+```
+
+`uv tool install` creates an isolated tool environment managed by `uv` (separate from your current project virtual environment), so it does not install packages into your active `.venv`.
 
 ## Quick start (DevContainer)
 

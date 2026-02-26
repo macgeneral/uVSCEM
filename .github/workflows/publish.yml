@@ -129,10 +129,15 @@ jobs:
           path: dist-binaries
           merge-multiple: true
 
+      - name: Normalize binary artifacts
+        run: |
+          mkdir -p dist-binaries-flat
+          find dist-binaries -type f -name 'uvscem-*' -exec cp -f {} dist-binaries-flat/ \;
+          test -n "$(find dist-binaries-flat -maxdepth 1 -type f -name 'uvscem-*' -print -quit)"
+
       - name: Generate SHA-256 checksums
         run: |
-          cd dist-binaries
-          find . -maxdepth 1 ! -name 'uvscem-*' ! -name '.' -delete
+          cd dist-binaries-flat
           sha256sum uvscem-* > checksums.sha256
           cat checksums.sha256
 
@@ -141,9 +146,30 @@ jobs:
 
       - name: Sign binaries with Sigstore
         run: |
-          for bin in dist-binaries/uvscem-*; do
+          for bin in dist-binaries-flat/uvscem-*; do
             cosign sign-blob --yes --bundle "${bin}.bundle" "${bin}"
           done
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release-assets
+          cp dist/*.whl release-assets/
+          cp dist/*.tar.gz release-assets/
+          cp dist-binaries-flat/uvscem-* release-assets/
+          cp dist-binaries-flat/checksums.sha256 release-assets/
+
+      - name: Verify staged release assets
+        run: |
+          set -euo pipefail
+          test -f release-assets/checksums.sha256
+          test -n "$(find release-assets -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$(find release-assets -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$(find release-assets -maxdepth 1 -type f -name 'uvscem-*' -print -quit)"
+          if find release-assets -maxdepth 1 -type f -name 'default.gitignore' | grep -q .; then
+            echo "default.gitignore found in staged release assets" >&2
+            exit 1
+          fi
+          ls -1 release-assets
 
       - name: Generate release notes
         id: release_notes
@@ -167,10 +193,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.release_notes.outputs.notes }}
           generate_release_notes: true
-          files: |
-            dist/*
-            dist-binaries/uvscem-*
-            dist-binaries/checksums.sha256
+          files: release-assets/*
           make_latest: true
 
       - name: Publish to PyPI
