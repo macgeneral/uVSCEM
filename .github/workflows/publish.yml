@@ -10,8 +10,16 @@ on:
         description: 'Run full publish pipeline without creating a GitHub release or publishing to PyPI'
         type: boolean
         default: true
-      force_upstream:
-        description: 'Trigger fresh Lint/Test/Build workflows before publish orchestration'
+      trigger_lint:
+        description: 'Trigger a fresh Lint workflow run'
+        type: boolean
+        default: true
+      trigger_test:
+        description: 'Trigger a fresh Test workflow run (forced, even without code changes)'
+        type: boolean
+        default: true
+      trigger_build:
+        description: 'Trigger a fresh Build workflow run (forced, even without code changes)'
         type: boolean
         default: true
 
@@ -34,29 +42,47 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Trigger upstream workflows for manual runs
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_upstream == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Set wait floor for manual dispatch
+        id: wait_floor
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          gh workflow run lint.yml --ref "${{ github.ref_name }}"
-          gh workflow run build.yml --ref "${{ github.ref_name }}" -f force=true
+          echo "min_created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for lint to pass
+      - name: Trigger upstream workflows for manual runs
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/wait-for-workflow.sh "Lint" "${{ github.sha }}" "${{ github.repository }}"
+        run: |
+          if [[ "${{ github.event.inputs.trigger_lint }}" == "true" ]]; then
+            gh workflow run lint.yml --ref "${{ github.ref_name }}"
+          fi
+          if [[ "${{ github.event.inputs.trigger_test }}" == "true" ]]; then
+            gh workflow run test.yml --ref "${{ github.ref_name }}" -f force=true
+          fi
+          if [[ "${{ github.event.inputs.trigger_build }}" == "true" ]]; then
+            gh workflow run build.yml --ref "${{ github.ref_name }}" -f force=true
+          fi
+
+      - name: Wait for lint to pass
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.trigger_lint == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WAIT_MIN_CREATED_AT: ${{ steps.wait_floor.outputs.min_created_at }}
+        run: bash scripts/wait-for-workflow.sh "Lint" "${{ github.sha }}" "${{ github.repository }}" 50 30 "${WAIT_MIN_CREATED_AT}"
 
       - name: Wait for tests to pass
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.trigger_test == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/wait-for-workflow.sh "Test" "${{ github.sha }}" "${{ github.repository }}"
+          WAIT_MIN_CREATED_AT: ${{ github.event_name == 'workflow_dispatch' && steps.wait_floor.outputs.min_created_at || '' }}
+        run: bash scripts/wait-for-workflow.sh "Test" "${{ github.sha }}" "${{ github.repository }}" 50 30 "${WAIT_MIN_CREATED_AT}"
 
       - name: Wait for build binaries
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.trigger_build == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/wait-for-workflow.sh "Build" "${{ github.sha }}" "${{ github.repository }}"
+          WAIT_MIN_CREATED_AT: ${{ github.event_name == 'workflow_dispatch' && steps.wait_floor.outputs.min_created_at || '' }}
+        run: bash scripts/wait-for-workflow.sh "Build" "${{ github.sha }}" "${{ github.repository }}" 50 30 "${WAIT_MIN_CREATED_AT}"
 
   prepare:
     runs-on: ubuntu-latest
@@ -120,8 +146,14 @@ jobs:
       - name: Normalize binary artifacts
         run: |
           mkdir -p dist-binaries-flat
+          find dist-binaries -type f -name 'default.gitignore' -delete
           find dist-binaries -type f -name 'uvscem-*' -exec cp -f {} dist-binaries-flat/ \;
-          test -n "$(find dist-binaries-flat -maxdepth 1 -type f -name 'uvscem-*' -print -quit)"
+          BIN_COUNT="$(find dist-binaries-flat -maxdepth 1 -type f -name 'uvscem-*' | wc -l)"
+          echo "Found ${BIN_COUNT} binary file(s) in dist-binaries-flat"
+          if [[ "${BIN_COUNT}" -eq 0 ]]; then
+            echo "::error::No uvscem-* binaries found after artifact normalization; aborting early."
+            exit 1
+          fi
 
       - name: Generate SHA-256 checksums
         run: |
@@ -162,11 +194,22 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
-          PREV_TAG="$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)"
-          if [[ -n "${PREV_TAG}" ]]; then
-            RANGE="${PREV_TAG}..${{ github.ref_name }}"
+          TARGET_REF="${{ github.sha }}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            CURRENT_TAG="${{ github.ref_name }}"
+            PREV_TAG="$(git tag --sort=-version:refname | grep -vx "${CURRENT_TAG}" | head -1 || true)"
+            if [[ -n "${PREV_TAG}" ]]; then
+              RANGE="${PREV_TAG}..${CURRENT_TAG}"
+            else
+              RANGE="${CURRENT_TAG}"
+            fi
           else
-            RANGE="${{ github.ref_name }}"
+            LAST_TAG="$(git describe --tags --abbrev=0 "${TARGET_REF}" 2>/dev/null || true)"
+            if [[ -n "${LAST_TAG}" ]]; then
+              RANGE="${LAST_TAG}..${TARGET_REF}"
+            else
+              RANGE="${TARGET_REF}"
+            fi
           fi
           NOTES="$(git log "${RANGE}" --pretty=format:'- %s (%h)' --no-merges)"
           {
