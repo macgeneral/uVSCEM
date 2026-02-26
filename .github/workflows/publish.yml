@@ -110,11 +110,6 @@ jobs:
       - name: Build distributions
         run: uv build
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
-        with:
-          attestations: true
-
       - name: Download build binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +118,7 @@ jobs:
             --jq '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")] | .[0].id')
           mkdir -p dist-binaries
           gh run download "${RUN_ID}" --repo "${{ github.repository }}" --dir dist-binaries
-          # flatten: each artifact is in its own subdirectory
+          # flatten: each artifact is in its own subdirectory, all filenames are unique
           find dist-binaries -mindepth 2 -type f -exec mv -t dist-binaries {} +
           find dist-binaries -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
           # remove injected default.gitignore from upload-artifact
@@ -170,3 +165,8 @@ jobs:
             dist/*
             dist-binaries/*
           make_latest: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        with:
+          attestations: true
