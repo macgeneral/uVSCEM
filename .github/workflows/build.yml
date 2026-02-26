@@ -81,7 +81,7 @@ jobs:
         run: pip install .
 
       - name: Build binary
-        uses: Nuitka/Nuitka-Action@b24f9b7859f1022afcfad039eb8b8ac3ae299e39 # v1.3
+        uses: Nuitka/Nuitka-Action@0d4e22d4b66062a13d120f6948dd90170be04b3a # v1.4
         with:
           script-name: src/uvscem/__main__.py
           output-file: ${{ matrix.os.artifact }}
