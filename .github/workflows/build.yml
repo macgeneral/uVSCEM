@@ -2,8 +2,6 @@ name: Build
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
@@ -38,6 +36,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+
+      - name: Wait for tests to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/wait-for-workflow.sh "Test" "${{ github.sha }}" "${{ github.repository }}"
 
       - name: Set up Python 3.10
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0

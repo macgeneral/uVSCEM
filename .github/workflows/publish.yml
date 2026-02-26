@@ -21,66 +21,21 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for tests to pass
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "Waiting for Test workflow to complete for ${{ github.sha }}..."
-          for attempt in $(seq 1 50); do
-            STATUS=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-              --jq '[.workflow_runs[] | select(.name == "Test")]
-                    | if map(select(.conclusion == "success")) | length > 0 then "success"
-                      elif map(select(.status == "completed")) | length > 0 then "failure"
-                      else "pending"
-                      end')
-
-            if [[ "${STATUS}" == "success" ]]; then
-              echo "Tests passed."
-              exit 0
-            elif [[ "${STATUS}" == "failure" ]]; then
-              echo "Tests did not pass for commit ${{ github.sha }}."
-              exit 1
-            fi
-
-            echo "Attempt ${attempt}/20: no completed test run yet, retrying in 30s..."
-            sleep 30
-          done
-          echo "Timed out waiting for tests to complete."
-          exit 1
-
-      - name: Wait for build binaries
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "Waiting for Build workflow to complete for ${{ github.sha }}..."
-          for attempt in $(seq 1 50); do
-            STATUS=$(gh api "/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}" \
-              --jq '[.workflow_runs[] | select(.name == "Build")]
-                    | if map(select(.conclusion == "success")) | length > 0 then "success"
-                      elif map(select(.status == "in_progress" or .status == "queued")) | length > 0 then "pending"
-                      elif map(select(.status == "completed")) | length > 0 then "failure"
-                      else "pending"
-                      end')
-
-            if [[ "${STATUS}" == "success" ]]; then
-              echo "Build succeeded."
-              exit 0
-            elif [[ "${STATUS}" == "failure" ]]; then
-              echo "Build did not succeed for commit ${{ github.sha }}."
-              exit 1
-            fi
-
-            echo "Attempt ${attempt}/30: build not yet complete, retrying in 30s..."
-            sleep 30
-          done
-          echo "Timed out waiting for build to complete."
-          exit 1
-
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Wait for tests to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/wait-for-workflow.sh "Test" "${{ github.sha }}" "${{ github.repository }}"
+
+      - name: Wait for build binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/wait-for-workflow.sh "Build" "${{ github.sha }}" "${{ github.repository }}"
 
       - name: Verify tag signature
         env:
@@ -171,6 +126,8 @@ jobs:
           # flatten: each artifact is in its own subdirectory
           find dist-binaries -mindepth 2 -type f -exec mv -t dist-binaries {} +
           find dist-binaries -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          # remove injected default.gitignore from upload-artifact
+          find dist-binaries -maxdepth 1 -name '*.gitignore' -delete
 
       - name: Generate release notes
         id: release_notes

@@ -140,6 +140,20 @@ uvscem import --bundle-path ./uvscem-offline-bundle --verify-manifest-signature
 
 uVSCEM follows standard proxy environment variables such as `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
 
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `UVSCEM_VSCODE_ROOT` | Override the VS Code data root (where `extensions/` and `extensions.json` live). Useful when auto-detection resolves the wrong path on macOS or Windows. |
+| `UVSCEM_RUNTIME` | Override the detected runtime environment. Accepted values: `local`, `vscode-server`, `vscode-remote`. |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Standard proxy variables respected by all HTTP requests. |
+
+Example:
+
+```bash
+UVSCEM_VSCODE_ROOT="$HOME/.vscode" uvscem install --config-name ./devcontainer.json
+```
+
 ## Why this exists
 
 uVSCEM is a practical workaround for known VS Code proxy/devcontainer limitations, including:
