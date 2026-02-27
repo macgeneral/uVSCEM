@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import os
 import socket
 import tempfile
@@ -248,19 +247,14 @@ def test_find_latest_code_handles_missing_or_invalid_versions(
     _write_code_launcher(
         root / "bin" / "commit-a" / "bin" / "remote-cli" / "code", "1.0.0", "commit-a"
     )
-    original_max = builtins.max
-
-    def _max(values, *args, **kwargs):
-        if not args and not kwargs:
-            return "missing"
-        return original_max(values, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "max", _max)
+    (root / "bin" / "commit-a" / "bin" / "remote-cli" / "code").write_text(
+        "VERSION=invalid\nCOMMIT=commit-a\n"
+    )
 
     with caplog.at_level("WARNING"):
         asyncio.run(manager.find_latest_code(update_environment=True))
 
-    assert "Unable to determine latest VSCode version" in caplog.text
+    assert "No VSCode CLI executable found" in caplog.text
 
 
 def test_find_latest_code_ignores_launcher_missing_commit(
@@ -285,6 +279,32 @@ def test_find_latest_code_ignores_launcher_missing_commit(
         asyncio.run(manager.find_latest_code(update_environment=False))
 
     assert "No VSCode CLI executable found" in caplog.text
+
+
+def test_parse_version_tuple_helper_covers_invalid_input() -> None:
+    assert code_manager._parse_version_tuple("1.2.3") == (1, 2, 3)
+    assert code_manager._parse_version_tuple("1.invalid.3") is None
+
+
+def test_parse_remote_cli_metadata_skips_irrelevant_lines(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "code"
+    launcher.write_text(
+        "# comment\nIGNORED=value\nVERSION='1.2.3'\nCOMMIT=abc123\n",
+        encoding="utf-8",
+    )
+
+    assert code_manager._parse_remote_cli_metadata(launcher) == ("1.2.3", "abc123")
+
+
+def test_parse_remote_cli_metadata_requires_version_and_commit(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "code"
+    launcher.write_text("VERSION=1.2.3\n", encoding="utf-8")
+
+    assert code_manager._parse_remote_cli_metadata(launcher) is None
 
 
 def test_find_latest_code_falls_back_to_local_cli(

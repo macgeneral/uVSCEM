@@ -5,11 +5,11 @@ import asyncio
 import logging
 import os
 import platform
-import shlex
 import shutil
 import socket
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from uvscem.internal_config import DEFAULT_USER_AGENT, MAX_INSTALL_RETRIES
 from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
@@ -23,6 +23,39 @@ user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _parse_version_tuple(version: str) -> tuple[int, ...] | None:
+    parts = version.strip().split(".")
+    parsed_parts: list[int] = []
+    for part in parts:
+        if not part.isdigit():
+            return None
+        parsed_parts.append(int(part))
+    return tuple(parsed_parts)
+
+
+def _parse_remote_cli_metadata(launcher_path: Path) -> tuple[str, str] | None:
+    version: str = ""
+    commit: str = ""
+    with open(launcher_path, "r") as launcher:
+        for line in launcher:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, raw_value = stripped.split("=", maxsplit=1)
+            key = key.strip()
+            if key not in {"VERSION", "COMMIT"}:
+                continue
+            value = raw_value.strip().strip('"').strip("'")
+            if key == "VERSION":
+                version = value
+                continue
+            commit = value
+
+    if not version or not commit:
+        return None
+    return version, commit
 
 
 class CodeManager(object):
@@ -70,7 +103,7 @@ class CodeManager(object):
     def _find_latest_code_sync(self, update_environment: bool = False) -> None:
         """Find all 'code' executables."""
         runtime_environment = detect_runtime_environment()
-        vscode_versions: dict = {}
+        vscode_versions: list[dict[str, Any]] = []
         vscode_dir: Path = vscode_root.joinpath("bin")
         executables: list[Path] = []
 
@@ -78,26 +111,25 @@ class CodeManager(object):
             executables = list(vscode_dir.glob("*/bin/remote-cli/code"))
 
         for vsc in executables:
-            # try to parse the important values from the shell script directly
-            with open(vsc, "r") as sh:
-                code_vars = dict(
-                    shlex.split(line, posix=True)[0].split("=", 1)
-                    for line in sh
-                    if "=" in line and not line.startswith("ROOT")
-                )
-                version = code_vars.get("VERSION")
-                commit = code_vars.get("COMMIT")
-                if version and commit:
-                    vscode_versions[version] = {
-                        "version": version,
-                        "commit": commit,
-                    }
+            metadata = _parse_remote_cli_metadata(vsc)
+            if metadata is None:
+                continue
+            version, commit = metadata
+            version_tuple = _parse_version_tuple(version)
+            if version_tuple is None:
+                continue
+            vscode_versions.append(
+                {
+                    "version": version,
+                    "commit": commit,
+                    "version_tuple": version_tuple,
+                }
+            )
 
         if vscode_versions:
-            latest_version = vscode_versions.get(max(vscode_versions.keys()))
-            if latest_version is None:
-                logger.warning("Unable to determine latest VSCode version")
-                return
+            latest_version = max(
+                vscode_versions, key=lambda item: item["version_tuple"]
+            )
             self.code_path = (
                 vscode_dir.joinpath(f"{latest_version.get('commit')}")
                 .resolve()
