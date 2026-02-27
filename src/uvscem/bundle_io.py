@@ -3,7 +3,21 @@ from __future__ import annotations
 import datetime
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+JsonMap = dict[str, object]
+
+
+def _as_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _as_map_list(value: object) -> list[JsonMap]:
+    if not isinstance(value, list):
+        return []
+    return [cast(JsonMap, item) for item in value if isinstance(item, dict)]
 
 
 def sha256_file(path: Path) -> str:
@@ -27,9 +41,9 @@ def resolve_vsce_sign_targets(
 
 def build_extension_manifest_entry(
     extension_id: str,
-    metadata: dict[str, Any],
+    metadata: JsonMap,
     artifacts_dir: Path,
-) -> dict[str, Any]:
+) -> JsonMap:
     version = str(metadata.get("version", ""))
     filename = f"{extension_id}-{version}.vsix"
     signature_filename = f"{extension_id}-{version}.sigzip"
@@ -41,18 +55,18 @@ def build_extension_manifest_entry(
         "vsix_sha256": sha256_file(artifacts_dir.joinpath(filename)),
         "signature_sha256": sha256_file(artifacts_dir.joinpath(signature_filename)),
         "installation_metadata": metadata.get("installation_metadata", {}),
-        "dependencies": list(metadata.get("dependencies", [])),
-        "extension_pack": list(metadata.get("extension_pack", [])),
+        "dependencies": _as_string_list(metadata.get("dependencies", [])),
+        "extension_pack": _as_string_list(metadata.get("extension_pack", [])),
     }
 
 
 def build_bundle_manifest(
     config_name: str,
     ordered_extensions: list[str],
-    extension_entries: list[dict[str, Any]],
+    extension_entries: list[JsonMap],
     vsce_sign_version: str,
     vsce_sign_binaries: list[dict[str, str]],
-) -> dict[str, Any]:
+) -> JsonMap:
     return {
         "schema_version": 1,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -68,10 +82,10 @@ def build_bundle_manifest(
 
 def resolve_bundled_vsce_sign_binary(
     bundle_dir: Path,
-    vsce_sign_info: dict[str, Any],
+    vsce_sign_info: JsonMap,
     current_target: str,
 ) -> tuple[Path, str]:
-    binaries = list(vsce_sign_info.get("binaries", []))
+    binaries = _as_map_list(vsce_sign_info.get("binaries", []))
     if binaries:
         selected = None
         for item in binaries:

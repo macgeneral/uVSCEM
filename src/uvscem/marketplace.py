@@ -2,7 +2,21 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+JsonMap = dict[str, object]
+JsonList = list[JsonMap]
+
+
+def _as_map(value: object) -> JsonMap:
+    return cast(JsonMap, value) if isinstance(value, dict) else {}
+
+
+def _as_map_list(value: object) -> JsonList:
+    if not isinstance(value, list):
+        return []
+    return [cast(JsonMap, item) for item in value if isinstance(item, dict)]
+
 
 FLAG_INCLUDE_VERSIONS = 0x1
 FLAG_INCLUDE_FILES = 0x2
@@ -54,7 +68,7 @@ def build_extension_query_body(
     page_number: int,
     page_size: int,
     flags: int,
-) -> dict[str, Any]:
+) -> JsonMap:
     return {
         "filters": [
             {
@@ -74,35 +88,34 @@ def build_extension_query_body(
 
 
 def shape_extension_metadata_versions(
-    extension: dict[str, Any],
+    extension: JsonMap,
     extension_id: str,
     include_latest_stable_version_only: bool,
     requested_version: str,
     vscode_root: Path,
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+) -> list[JsonMap]:
+    result: list[JsonMap] = []
     extension_name: str = str(extension.get("extensionName", ""))
-    extensions_versions: list[dict[str, Any]] = list(extension.get("versions", []))
-    extensions_statistics: dict[str, Any] = dict(
-        {
-            (item.get("statisticName"), item.get("value"))
-            for item in extension.get("statistics", [])
-        }
-    )
+    extensions_versions = _as_map_list(extension.get("versions", []))
+    extensions_statistics: JsonMap = {
+        str(item.get("statisticName")): item.get("value")
+        for item in _as_map_list(extension.get("statistics", []))
+        if isinstance(item.get("statisticName"), str)
+    }
+    extension_publisher = _as_map(extension.get("publisher", {}))
     extension_publisher_username: str = str(
-        extension.get("publisher", {}).get("publisherName", "")
+        extension_publisher.get("publisherName", "")
     )
 
     for extension_version_info in extensions_versions:
         extension_version: str = str(extension_version_info.get("version", ""))
         if requested_version and extension_version != requested_version:
             continue
-        extension_properties: dict[str, Any] = dict(
-            {
-                (item.get("key"), item.get("value"))
-                for item in extension_version_info.get("properties", {})
-            }
-        )
+        extension_properties: JsonMap = {
+            str(item.get("key")): item.get("value")
+            for item in _as_map_list(extension_version_info.get("properties", {}))
+            if isinstance(item.get("key"), str)
+        }
         extension_dependencies: list[str] = [
             item
             for item in str(
@@ -121,12 +134,11 @@ def shape_extension_metadata_versions(
             ).split(",")
             if item
         ]
-        extension_files: dict[str, Any] = dict(
-            {
-                (item.get("assetType"), item.get("source"))
-                for item in extension_version_info.get("files", [])
-            }
-        )
+        extension_files: JsonMap = {
+            str(item.get("assetType")): item.get("source")
+            for item in _as_map_list(extension_version_info.get("files", []))
+            if isinstance(item.get("assetType"), str)
+        }
         extension_download_url: str = str(
             extension_files.get("Microsoft.VisualStudio.Services.VSIXPackage", "")
         )
@@ -176,12 +188,10 @@ def shape_extension_metadata_versions(
                             * 1000
                         ),
                         "id": extension.get("extensionId", ""),
-                        "publisherDisplayName": extension.get("publisher", {}).get(
+                        "publisherDisplayName": extension_publisher.get(
                             "displayName", ""
                         ),
-                        "publisherId": extension.get("publisher", {}).get(
-                            "publisherId", ""
-                        ),
+                        "publisherId": extension_publisher.get("publisherId", ""),
                         "isPreReleaseVersion": is_pre_release,
                     },
                 },

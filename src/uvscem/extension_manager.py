@@ -14,7 +14,7 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Protocol, TypedDict, cast
 from urllib.parse import urlparse
 
 # for parsing devcontainer.json (if it includes comments etc.)
@@ -81,6 +81,37 @@ TRUSTED_DOWNLOAD_HOSTS: tuple[str, ...] = (
 )
 
 
+class InstalledIdentifier(TypedDict, total=False):
+    id: str
+
+
+class InstalledEntry(TypedDict, total=False):
+    identifier: InstalledIdentifier
+    version: str
+
+
+MetadataEntry = dict[str, object]
+
+
+def _as_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _as_installed_entry(value: object) -> InstalledEntry:
+    if not isinstance(value, dict):
+        return InstalledEntry()
+    return cast(InstalledEntry, value)
+
+
+class _SupportsNetworkOptions(Protocol):
+    allow_unsigned: bool
+    allow_untrusted_urls: bool
+    disable_ssl: bool
+    ca_bundle: str
+
+
 def _workflow_error_message(operation: str, exc: Exception) -> str:
     return f"{operation} failed: {exc}"
 
@@ -122,7 +153,7 @@ def _configure_http_session(
 
 
 def _apply_network_options(
-    manager: Any,
+    manager: _SupportsNetworkOptions,
     *,
     allow_unsigned: bool,
     allow_untrusted_urls: bool,
@@ -158,7 +189,7 @@ def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
-def _write_json_atomic(path: Path, payload: Any) -> None:
+def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -183,9 +214,9 @@ class CodeExtensionManager(object):
     code_binary: str
     dev_container_config_path: Path
     extensions: list[str]
-    installed: list[dict[str, Any]]
+    installed: list[InstalledEntry]
     extension_dependencies: dict[str, set[str]]
-    extension_metadata: dict[str, dict[str, Any]]
+    extension_metadata: dict[str, MetadataEntry]
     target_path: Path
     vsce_sign_binary: Path | None
     allow_unsigned: bool
@@ -264,13 +295,20 @@ class CodeExtensionManager(object):
                 extensions.append(dependency)
 
     async def _load_extension_specs(self) -> list[ExtensionSpec]:
-        parsed_config: dict[str, Any] = await asyncio.to_thread(
+        parsed_config: dict[str, object] = await asyncio.to_thread(
             lambda: json5.loads(self.dev_container_config_path.read_text())
         )
-        raw_extensions: list[str] = list(
-            parsed_config.get("customizations", {})
-            .get("vscode", {})
-            .get("extensions", [])
+        customizations = parsed_config.get("customizations", {})
+        if not isinstance(customizations, dict):
+            customizations = {}
+        vscode = customizations.get("vscode", {})
+        if not isinstance(vscode, dict):
+            vscode = {}
+        extensions_value = vscode.get("extensions", [])
+        raw_extensions: list[str] = (
+            [item for item in extensions_value if isinstance(item, str)]
+            if isinstance(extensions_value, list)
+            else []
         )
         return [
             ExtensionSpec(*self.parse_extension_spec(extension_spec))
@@ -293,7 +331,7 @@ class CodeExtensionManager(object):
     async def _fetch_metadata_for_request(
         self,
         request: ResolvedExtensionRequest,
-    ) -> dict[str, Any]:
+    ) -> MetadataEntry:
         metadata = await self.api_manager.get_extension_metadata(
             request.extension_id,
             include_latest_stable_version_only=not bool(request.pinned_version),
@@ -322,13 +360,15 @@ class CodeExtensionManager(object):
                 continue
             self.extension_metadata[extension_id] = metadata
 
-            dependencies = self.sanitize_dependencies(metadata.get("dependencies", []))
+            dependencies = self.sanitize_dependencies(
+                _as_string_list(metadata.get("dependencies", []))
+            )
             self.extension_dependencies[extension_id].update(dependencies)
             self.add_missing_dependency(extensions, dependencies)
 
             # dont treat extension packs as dependencies
             extension_pack = self.sanitize_dependencies(
-                metadata.get("extension_pack", [])
+                _as_string_list(metadata.get("extension_pack", []))
             )
             self.add_missing_dependency(extensions, extension_pack)
 
@@ -363,7 +403,7 @@ class CodeExtensionManager(object):
 
     async def download_extension(self, extension_id: str) -> Path:
         """Download an extension and return the downloaded file's path."""
-        metadata: dict = self.extension_metadata.get(extension_id, {})
+        metadata = self.extension_metadata.get(extension_id, {})
         url = _validate_download_url(
             str(metadata.get("url", "")),
             purpose=f"Extension download for {extension_id}",
@@ -397,7 +437,7 @@ class CodeExtensionManager(object):
 
     async def download_signature_archive(self, extension_id: str) -> Path:
         """Download an extension signature archive and return the downloaded file path."""
-        metadata: dict = self.extension_metadata.get(extension_id, {})
+        metadata = self.extension_metadata.get(extension_id, {})
         url = _validate_download_url(
             str(metadata.get("signature", "")),
             purpose=f"Signature download for {extension_id}",
@@ -484,7 +524,7 @@ class CodeExtensionManager(object):
         if extension_id:
             extension_ids.append(extension_id)
 
-        def _metadata_extension_id(metadata: dict[str, Any]) -> str:
+        def _metadata_extension_id(metadata: InstalledEntry) -> str:
             return str(metadata.get("identifier", {}).get("id", "")).lower()
 
         for eid in extension_ids:
@@ -492,14 +532,14 @@ class CodeExtensionManager(object):
                 "installation_metadata"
             )
             if installation_metadata:
-                incoming = dict(installation_metadata)
+                incoming = _as_installed_entry(installation_metadata)
                 incoming_id = _metadata_extension_id(incoming)
                 if not incoming_id:
                     self.installed.append(incoming)
                     continue
 
                 replaced = False
-                deduplicated: list[dict[str, Any]] = []
+                deduplicated: list[InstalledEntry] = []
                 for item in self.installed:
                     if _metadata_extension_id(item) == incoming_id:
                         if not replaced:
@@ -550,7 +590,7 @@ class CodeExtensionManager(object):
             )
 
         # installing extension packs doesn't work because the code install routine tries fetching other packages itself
-        extension_pack_items = list(metadata.get("extension_pack", []))
+        extension_pack_items = _as_string_list(metadata.get("extension_pack", []))
         if extension_pack_items:
             manually_installed = []
 
@@ -591,13 +631,20 @@ class CodeExtensionManager(object):
                         raise
                     attempt += 1
 
-    async def find_installed(self) -> list[dict[str, Any]]:
+    async def find_installed(self) -> list[InstalledEntry]:
         """Return a list of already installed extensions."""
 
-        def _find_sync() -> list[dict[str, Any]]:
+        def _find_sync() -> list[InstalledEntry]:
             extensions_path: Path = self.extensions_json_path()
             with open(extensions_path, "r") as f:
-                return json.load(f)
+                loaded = json.load(f)
+                if not isinstance(loaded, list):
+                    return []
+                return [
+                    cast(InstalledEntry, item)
+                    for item in loaded
+                    if isinstance(item, dict)
+                ]
 
         return await asyncio.to_thread(_find_sync)
 
@@ -811,9 +858,9 @@ def export_offline_bundle(
 
         async def _run() -> tuple[
             list[str],
-            dict[str, dict[str, Any]],
+            dict[str, MetadataEntry],
             dict[str, tuple[Path, Path]],
-            Any,
+            requests.Session | None,
         ]:
             manager = CodeExtensionManager(
                 config_name=config_name,

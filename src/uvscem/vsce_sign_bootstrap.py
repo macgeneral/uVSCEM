@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Iterator
+from typing import Iterator, Protocol
 from urllib.parse import quote
 
 import requests
@@ -37,6 +37,10 @@ SUPPORTED_VSCE_SIGN_TARGETS = (
 
 class VsceSignBootstrapError(RuntimeError):
     """Raised when vsce-sign binary bootstrap fails."""
+
+
+class RegistrySession(Protocol):
+    def get(self, url: str, *, timeout: int) -> requests.Response: ...
 
 
 @dataclass
@@ -113,7 +117,7 @@ def _verify_npm_integrity(tarball_bytes: bytes, integrity: str) -> None:
 def _fetch_package_info(
     package_name: str,
     version: str,
-    session: Any,
+    session: RegistrySession,
 ) -> tuple[str, str]:
     encoded_name = quote(package_name, safe="")
     response = session.get(f"https://registry.npmjs.org/{encoded_name}", timeout=30)
@@ -168,7 +172,7 @@ def _expected_binary_sha512(
     package_name: str,
     version: str,
     binary_name: str,
-    session: Any,
+    session: RegistrySession,
 ) -> str:
     tarball_url, integrity = _fetch_package_info(package_name, version, session)
     tarball_response = session.get(tarball_url, timeout=60)
@@ -183,7 +187,7 @@ def install_vsce_sign_binary(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: Any | None = None,
+    session: RegistrySession | None = None,
     verify_existing_checksum: bool = True,
 ) -> Path:
     """Install platform-specific vsce-sign binary without requiring Node.js."""
@@ -203,7 +207,7 @@ def install_vsce_sign_binary_for_target(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: Any | None = None,
+    session: RegistrySession | None = None,
     verify_existing_checksum: bool = True,
 ) -> Path:
     """Install vsce-sign binary for a specific npm platform target."""
@@ -211,7 +215,9 @@ def install_vsce_sign_binary_for_target(
     install_path = Path(install_dir).expanduser().resolve()
     binary_name = _binary_name_for_target(target)
     binary_path = install_path.joinpath(binary_name)
-    session_client: Any = session if session is not None else requests.Session()
+    session_client: RegistrySession = (
+        session if session is not None else requests.Session()
+    )
 
     if binary_path.is_file() and not force:
         if not verify_existing_checksum:
@@ -260,7 +266,7 @@ def install_vsce_sign_binary_with_fallback(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: Any | None = None,
+    session: RegistrySession | None = None,
     temp_root: str | Path | None = None,
     verify_existing_checksum: bool = True,
 ) -> VsceSignRunInstallation:
@@ -298,7 +304,7 @@ def provision_vsce_sign_binary_for_run(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
     force: bool = False,
-    session: Any | None = None,
+    session: RegistrySession | None = None,
     temp_root: str | Path | None = None,
     verify_existing_checksum: bool = True,
 ) -> Iterator[Path]:

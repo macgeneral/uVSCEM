@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Iterator
 
 # for parsing devcontainer.json (if it includes comments etc.)
 import requests
@@ -36,6 +36,8 @@ user_agent: str = DEFAULT_USER_AGENT
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
 
+JsonMap = dict[str, object]
+
 
 class CodeAPIManager(object):
     """Directly obtain all relevant information from the VSCode Marketplace API."""
@@ -59,8 +61,8 @@ class CodeAPIManager(object):
         include_latest_version_only: bool = False,
         unpublished: bool = False,
         include_name_conflict_info: bool = True,
-        api_version="7.2-preview.1",
-    ) -> Any:
+        api_version: str = "7.2-preview.1",
+    ) -> Iterator[JsonMap]:
         headers = {
             "Accept": f"application/json; charset=utf-8; api-version={api_version}"
         }
@@ -122,8 +124,22 @@ class CodeAPIManager(object):
             )
             r.raise_for_status()
             response = r.json()
-
-            extensions = response["results"][0]["extensions"]
+            if not isinstance(response, dict):
+                break
+            results = response.get("results", [])
+            if not isinstance(results, list) or not results:
+                break
+            first_result = results[0]
+            if not isinstance(first_result, dict):
+                break
+            extensions_value = first_result.get("extensions", [])
+            if not isinstance(extensions_value, list):
+                break
+            extensions = [
+                extension
+                for extension in extensions_value
+                if isinstance(extension, dict)
+            ]
             for extension in extensions:
                 yield extension
 
@@ -136,8 +152,8 @@ class CodeAPIManager(object):
         include_latest_version_only: bool = False,
         include_latest_stable_version_only: bool = True,
         requested_version: str = "",
-    ) -> dict[str, list[dict[str, Any]]]:
-        extensions = {}
+    ) -> dict[str, list[JsonMap]]:
+        extensions: dict[str, list[JsonMap]] = {}
         logger.info(f"Obtaining metadata for {extension_id}")
         for extension in self._get_vscode_extension_sync(
             extension_id=extension_id,
@@ -173,7 +189,7 @@ class CodeAPIManager(object):
         unpublished: bool = False,
         include_name_conflict_info: bool = True,
         api_version: str = "7.2-preview.1",
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonMap]:
         """Asynchronously fetch extension search results."""
         return await asyncio.to_thread(
             lambda: list(
@@ -204,7 +220,7 @@ class CodeAPIManager(object):
         include_latest_version_only: bool = False,
         include_latest_stable_version_only: bool = True,
         requested_version: str = "",
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, list[JsonMap]]:
         """Asynchronously fetch metadata for one extension."""
         return await asyncio.to_thread(
             self._get_extension_metadata_sync,

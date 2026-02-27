@@ -9,7 +9,7 @@ import shutil
 import socket
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 from uvscem.internal_config import DEFAULT_USER_AGENT, MAX_INSTALL_RETRIES
 from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
@@ -23,6 +23,12 @@ user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+class RemoteCliVersion(TypedDict):
+    version: str
+    commit: str
+    version_tuple: tuple[int, ...]
 
 
 def _parse_version_tuple(version: str) -> tuple[int, ...] | None:
@@ -103,7 +109,7 @@ class CodeManager(object):
     def _find_latest_code_sync(self, update_environment: bool = False) -> None:
         """Find all 'code' executables."""
         runtime_environment = detect_runtime_environment()
-        vscode_versions: list[dict[str, Any]] = []
+        vscode_versions: list[RemoteCliVersion] = []
         vscode_dir: Path = vscode_root.joinpath("bin")
         executables: list[Path] = []
 

@@ -5,14 +5,28 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Callable, Protocol
 
 import requests
 
 
+class DownloadSession(Protocol):
+    def get(
+        self,
+        url: str,
+        *,
+        stream: bool,
+        headers: dict[str, str],
+        timeout: tuple[int, int],
+    ) -> requests.Response: ...
+
+
+RunCommand = Callable[..., subprocess.CompletedProcess[str]]
+
+
 def stream_download_to_target(
     *,
-    session: Any,
+    session: DownloadSession,
     url: str,
     target_path: Path,
     headers: dict[str, str],
@@ -46,7 +60,7 @@ def run_vsce_sign_verify(
     vsce_sign_binary: Path,
     extension_path: Path,
     signature_archive_path: Path,
-    run_command: Any = subprocess.run,
+    run_command: RunCommand = subprocess.run,
 ) -> None:
     cmd = [
         str(vsce_sign_binary),
@@ -75,7 +89,7 @@ def run_code_cli_install(
     *,
     code_binary: str,
     extension_path: Path,
-    run_command: Any = subprocess.run,
+    run_command: RunCommand = subprocess.run,
 ) -> None:
     cmd = [
         code_binary,

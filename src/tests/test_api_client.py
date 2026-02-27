@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from uvscem.api_client import CodeAPIManager
 
 
@@ -305,3 +307,31 @@ def test_async_api_methods_use_private_sync_helpers() -> None:
 
     assert extensions == [{"id": "one"}, {"id": "two"}]
     assert metadata == {"publisher.name": []}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"results": []},
+        {"results": ["invalid"]},
+        {"results": [{"extensions": "invalid"}]},
+    ],
+)
+def test_get_vscode_extension_handles_malformed_payloads(payload: object) -> None:
+    manager = CodeAPIManager.__new__(CodeAPIManager)
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return payload
+
+    manager.session = SimpleNamespace(post=lambda *_args, **_kwargs: _Response())
+
+    result = asyncio.run(
+        manager.get_vscode_extension(extension_id="publisher.name", max_page=1)
+    )
+
+    assert result == []

@@ -1298,6 +1298,50 @@ def test_extensions_json_path_uses_vscode_root(
     )
 
 
+def test_type_coercion_helpers_cover_non_list_and_non_dict_inputs() -> None:
+    assert extension_manager._as_string_list("invalid") == []
+    assert extension_manager._as_string_list(["ok", 1, None]) == ["ok"]
+    assert extension_manager._as_installed_entry("invalid") == {}
+
+
+def test_load_extension_specs_handles_non_mapping_customizations(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.dev_container_config_path.write_text(
+        json.dumps({"customizations": "invalid"}), encoding="utf-8"
+    )
+
+    specs = asyncio.run(bare_manager._load_extension_specs())
+
+    assert specs == []
+
+
+def test_load_extension_specs_handles_non_mapping_vscode(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.dev_container_config_path.write_text(
+        json.dumps({"customizations": {"vscode": "invalid"}}), encoding="utf-8"
+    )
+
+    specs = asyncio.run(bare_manager._load_extension_specs())
+
+    assert specs == []
+
+
+def test_find_installed_returns_empty_for_non_list_json(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    json_path = tmp_path / "extensions.json"
+    json_path.write_text(json.dumps({"not": "a-list"}), encoding="utf-8")
+    monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: json_path)
+
+    installed = asyncio.run(bare_manager.find_installed())
+
+    assert installed == []
+
+
 def test_cli_install_function_uses_expected_constructor_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
