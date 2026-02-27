@@ -333,6 +333,7 @@ jobs:
           path: .
 
       - name: Create GitHub Release
+        id: create-release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ github.ref_name }}
@@ -341,7 +342,25 @@ jobs:
           files: release-assets/*
           make_latest: true
 
+      - name: Stage Python distributions for PyPI
+        run: |
+          mkdir -p dist
+          cp release-assets/*.whl release-assets/*.tar.gz dist/
+
       - name: Publish to PyPI
+        id: pypi-publish
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           attestations: true
+
+      - name: Rollback GitHub Release and tag on PyPI failure
+        if: failure() && steps.create-release.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "PyPI publish failed — rolling back GitHub Release and deleting tag ${{ github.ref_name }}."
+          gh release delete "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --yes \
+            --cleanup-tag \
+            || echo "::warning::Release rollback failed; manual cleanup of release and tag ${{ github.ref_name }} may be required."

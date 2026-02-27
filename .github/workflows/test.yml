@@ -1,9 +1,6 @@
 name: Test
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_run:
     workflows: ["Lint"]
     types: [completed]
@@ -37,14 +34,14 @@ jobs:
           bash scripts/check-build-needed.sh \
             "${{ github.sha }}" \
             "${{ github.repository }}" \
-            "${{ inputs.force == true || github.event_name == 'push' }}" \
+            "${{ inputs.force == true || (github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) }}" \
             "Test" \
             "*.py" "uv.lock"
 
   tests:
     name: ${{ matrix.os.name }} / Python ${{ matrix.python-version }}
     needs: detect-changes
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true') }}
     runs-on: ${{ matrix.os.runner }}
     timeout-minutes: 45
     permissions:
@@ -131,7 +128,7 @@ jobs:
   collect-coverage:
     needs: [detect-changes, tests]
     if: |
-      (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true')) &&
+      needs.detect-changes.outputs.skip != 'true' &&
       (
         (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main') ||
         (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
