@@ -35,7 +35,7 @@ jobs:
           bash scripts/check-build-needed.sh \
             "${{ github.sha }}" \
             "${{ github.repository }}" \
-            "${{ inputs.force }}" \
+            "${{ inputs.force == true || github.event_name == 'push' }}" \
             "Build" \
             "*.py" "pyproject.toml" "uv.lock" ".github/workflows/build.yml"
 

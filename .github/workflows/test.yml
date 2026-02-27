@@ -1,6 +1,9 @@
 name: Test
 
 on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_run:
     workflows: ["Lint"]
     types: [completed]
@@ -34,14 +37,14 @@ jobs:
           bash scripts/check-build-needed.sh \
             "${{ github.sha }}" \
             "${{ github.repository }}" \
-            "${{ inputs.force }}" \
+            "${{ inputs.force == true || github.event_name == 'push' }}" \
             "Test" \
             "*.py" "uv.lock"
 
   tests:
     name: ${{ matrix.os.name }} / Python ${{ matrix.python-version }}
     needs: detect-changes
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true') }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && needs.detect-changes.outputs.skip != 'true') }}
     runs-on: ${{ matrix.os.runner }}
     timeout-minutes: 45
     permissions:
