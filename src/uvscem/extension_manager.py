@@ -250,7 +250,10 @@ def _resolve_cli_extensions_dir(code_binary: str) -> Path | None:
     extensions_dir = next(group for group in match.groups() if group is not None)
     result = Path(extensions_dir).expanduser().resolve()
     for denied in _UNTRUSTED_CLI_EXTENSION_DIR_PREFIXES:
-        if result == denied or str(result).startswith(str(denied) + os.sep):
+        # Resolve the denied prefix so that symlinked system dirs (e.g.
+        # /etc → /private/etc on macOS) are compared on equal footing.
+        resolved_denied = denied.resolve()
+        if result == resolved_denied or result.is_relative_to(resolved_denied):
             logger.warning(
                 "CLI extensions dir resolved to a system path, ignoring: %s",
                 result,
@@ -261,6 +264,7 @@ def _resolve_cli_extensions_dir(code_binary: str) -> Path | None:
 
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    write_error: Exception | None = None
     with tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -274,9 +278,13 @@ def _write_json_atomic(path: Path, payload: object) -> None:
             json.dump(payload, tmp_file)
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
+        except Exception as exc:
+            write_error = exc
+    # File is now closed; safe to unlink on all platforms including Windows,
+    # which holds an exclusive lock on open NamedTemporaryFile handles.
+    if write_error is not None:
+        tmp_path.unlink(missing_ok=True)
+        raise write_error
     tmp_path.replace(path)
 
 
