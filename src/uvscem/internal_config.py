@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# The Marketplace CDN may reject requests with generic/tool user-agents;
+# a browser-like UA is required to obtain download URLs that resolve correctly.
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"

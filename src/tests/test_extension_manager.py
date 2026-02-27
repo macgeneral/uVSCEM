@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import pytest
 
-from uvscem import extension_manager
+from uvscem import bundle_workflow, extension_manager
 from uvscem.exceptions import (
     InstallationWorkflowError,
     OfflineBundleExportError,
@@ -703,7 +703,9 @@ def test_install_extension_manually_extracts_and_updates_json(
 
     called: list[str] = []
 
-    async def _update(extension_id: str = "", extension_ids: list[str] = []):
+    async def _update(
+        extension_id: str = "", extension_ids: list[str] | None = None
+    ) -> None:
         called.append(extension_id)
 
     monkeypatch.setattr(bare_manager, "update_extensions_json", _update)
@@ -756,7 +758,9 @@ def test_install_extension_manually_can_skip_json_update(
 
     called: list[str] = []
 
-    async def _update_skip(extension_id: str = "", extension_ids: list[str] = []):
+    async def _update_skip(
+        extension_id: str = "", extension_ids: list[str] | None = None
+    ) -> None:
         called.append("updated")
 
     monkeypatch.setattr(bare_manager, "update_extensions_json", _update_skip)
@@ -1007,8 +1011,10 @@ def test_install_extension_handles_extension_pack_and_recursion(
     updates: list[list[str]] = []
     manual: list[str] = []
 
-    async def _update_pack(extension_id: str = "", extension_ids: list[str] = []):
-        updates.append(list(extension_ids))
+    async def _update_pack(
+        extension_id: str = "", extension_ids: list[str] | None = None
+    ) -> None:
+        updates.append(list(extension_ids or []))
 
     async def _manual_pack(
         extension_id: str, extension_path: Path, update_json: bool = True
@@ -1038,8 +1044,10 @@ def test_install_extension_extension_pack_when_already_in_pack_mode(
     updates: list[list[str]] = []
     manual: list[str] = []
 
-    async def _update_pack(extension_id: str = "", extension_ids: list[str] = []):
-        updates.append(list(extension_ids))
+    async def _update_pack(
+        extension_id: str = "", extension_ids: list[str] | None = None
+    ) -> None:
+        updates.append(list(extension_ids or []))
 
     async def _manual_pack(
         extension_id: str, extension_path: Path, update_json: bool = True
@@ -1681,8 +1689,10 @@ def test_install_extension_handles_extension_pack_and_recursion_async(
     updates: list[list[str]] = []
     manual: list[str] = []
 
-    async def _update(extension_id: str = "", extension_ids: list[str] = []) -> None:
-        updates.append(list(extension_ids))
+    async def _update(
+        extension_id: str = "", extension_ids: list[str] | None = None
+    ) -> None:
+        updates.append(list(extension_ids or []))
 
     async def _manual(
         extension_id: str, extension_path: Path, update_json: bool = True
@@ -1803,8 +1813,10 @@ def test_install_extension_pack_mode_without_pending_child_async(
     updates: list[list[str]] = []
     manual: list[str] = []
 
-    async def _update(extension_id: str = "", extension_ids: list[str] = []) -> None:
-        updates.append(list(extension_ids))
+    async def _update(
+        extension_id: str = "", extension_ids: list[str] | None = None
+    ) -> None:
+        updates.append(list(extension_ids or []))
 
     async def _manual(
         extension_id: str, extension_path: Path, update_json: bool = True
@@ -2257,7 +2269,7 @@ def test_main_routes_import_command_with_skip_manifest_signature_verification(
 
 def test_run_command_returns_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        extension_manager.subprocess,
+        bundle_workflow.subprocess,
         "run",
         lambda cmd, capture_output, check, text: SimpleNamespace(
             returncode=0,
@@ -2266,12 +2278,12 @@ def test_run_command_returns_on_success(monkeypatch: pytest.MonkeyPatch) -> None
         ),
     )
 
-    extension_manager._run_command(["echo", "ok"])
+    bundle_workflow._run_command(["echo", "ok"])
 
 
 def test_run_command_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        extension_manager.subprocess,
+        bundle_workflow.subprocess,
         "run",
         lambda cmd, capture_output, check, text: SimpleNamespace(
             returncode=2,
@@ -2281,7 +2293,7 @@ def test_run_command_raises_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        extension_manager._run_command(["false"])
+        bundle_workflow._run_command(["false"])
 
 
 def test_sign_bundle_manifest_invokes_gpg_and_returns_signature_path(
@@ -2295,9 +2307,9 @@ def test_sign_bundle_manifest_invokes_gpg_and_returns_signature_path(
     def _run_command(cmd: list[str]) -> None:
         called.append(cmd)
 
-    monkeypatch.setattr(extension_manager, "_run_command", _run_command)
+    monkeypatch.setattr(bundle_workflow, "_run_command", _run_command)
 
-    signature_path = extension_manager._sign_bundle_manifest(manifest_path, "ABC123")
+    signature_path = bundle_workflow._sign_bundle_manifest(manifest_path, "ABC123")
 
     assert signature_path == manifest_path.with_suffix(".json.asc")
     assert called == [
@@ -2327,9 +2339,9 @@ def test_verify_bundle_manifest_signature_invokes_gpg_without_keyring(
     def _run_command(cmd: list[str]) -> None:
         called.append(cmd)
 
-    monkeypatch.setattr(extension_manager, "_run_command", _run_command)
+    monkeypatch.setattr(bundle_workflow, "_run_command", _run_command)
 
-    extension_manager._verify_bundle_manifest_signature(manifest_path, signature_path)
+    bundle_workflow._verify_bundle_manifest_signature(manifest_path, signature_path)
 
     assert called == [
         [
@@ -2354,9 +2366,9 @@ def test_verify_bundle_manifest_signature_invokes_gpg_with_keyring(
     def _run_command(cmd: list[str]) -> None:
         called.append(cmd)
 
-    monkeypatch.setattr(extension_manager, "_run_command", _run_command)
+    monkeypatch.setattr(bundle_workflow, "_run_command", _run_command)
 
-    extension_manager._verify_bundle_manifest_signature(
+    bundle_workflow._verify_bundle_manifest_signature(
         manifest_path,
         signature_path,
         verification_keyring=str(keyring_path),
@@ -2434,17 +2446,17 @@ def test_export_offline_bundle_writes_manifest_and_artifacts(
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "install_vsce_sign_binary_for_target",
         _install_vsce_sign_binary_for_target,
     )
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "get_vsce_sign_package_name",
         lambda target=None: f"@vscode/vsce-sign-{target or 'linux-x64'}",
     )
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "get_vsce_sign_target",
         lambda: "linux-x64",
     )
@@ -2536,11 +2548,11 @@ def test_export_offline_bundle_signs_manifest_when_key_is_provided(
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "install_vsce_sign_binary_for_target",
         _install_vsce_sign_binary_for_target,
     )
-    monkeypatch.setattr(extension_manager, "_sign_bundle_manifest", _sign_manifest)
+    monkeypatch.setattr(bundle_workflow, "_sign_bundle_manifest", _sign_manifest)
 
     config_file = tmp_path / "devcontainer.json"
     config_file.write_text("{}", encoding="utf-8")
@@ -2614,12 +2626,12 @@ def test_export_offline_bundle_supports_all_vsce_sign_targets(
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "install_vsce_sign_binary_for_target",
         _install_vsce_sign_binary_for_target,
     )
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "SUPPORTED_VSCE_SIGN_TARGETS",
         ("linux-x64", "win32-x64"),
     )
@@ -2695,7 +2707,7 @@ def test_export_offline_bundle_supports_custom_target_list(
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ExportManager)
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "install_vsce_sign_binary_for_target",
         _install_vsce_sign_binary_for_target,
     )
@@ -2883,7 +2895,7 @@ def test_import_offline_bundle_strict_offline_blocks_network_attempts(
         return None
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
-    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(bundle_workflow, "get_vsce_sign_target", lambda: "linux-x64")
     monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
 
     with pytest.raises(OfflineModeError, match="strict offline mode"):
@@ -2967,7 +2979,7 @@ def test_import_offline_bundle_strict_offline_handles_missing_session(
         return None
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
-    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(bundle_workflow, "get_vsce_sign_target", lambda: "linux-x64")
     monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
 
     extension_manager.import_offline_bundle(
@@ -3237,9 +3249,9 @@ def test_import_offline_bundle_verifies_manifest_signature_with_keyring(
         return None
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
-    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(bundle_workflow, "get_vsce_sign_target", lambda: "linux-x64")
     monkeypatch.setattr(
-        extension_manager,
+        bundle_workflow,
         "_verify_bundle_manifest_signature",
         _verify_manifest,
     )
@@ -3542,7 +3554,7 @@ def test_import_offline_bundle_raises_when_no_matching_vsce_sign_target(
             return tmp_path / "vscode-root" / "extensions" / "extensions.json"
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
-    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(bundle_workflow, "get_vsce_sign_target", lambda: "linux-x64")
 
     with pytest.raises(ValueError, match="No bundled vsce-sign binary found"):
         extension_manager.import_offline_bundle(
@@ -3621,7 +3633,7 @@ def test_import_offline_bundle_accepts_single_nonmatching_vsce_sign_target(
         return None
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
-    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(bundle_workflow, "get_vsce_sign_target", lambda: "linux-x64")
     monkeypatch.setattr(extension_manager.asyncio, "sleep", _no_sleep)
 
     extension_manager.import_offline_bundle(
@@ -3683,7 +3695,7 @@ def test_import_offline_bundle_raises_when_vsce_sign_checksum_mismatch(
             return tmp_path / "vscode-root" / "extensions" / "extensions.json"
 
     monkeypatch.setattr(extension_manager, "CodeExtensionManager", _ImportManager)
-    monkeypatch.setattr(extension_manager, "get_vsce_sign_target", lambda: "linux-x64")
+    monkeypatch.setattr(bundle_workflow, "get_vsce_sign_target", lambda: "linux-x64")
 
     with pytest.raises(ValueError, match="vsce-sign checksum mismatch"):
         extension_manager.import_offline_bundle(

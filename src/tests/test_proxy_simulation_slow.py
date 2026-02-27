@@ -29,8 +29,8 @@ class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
 class _NaiveForwardProxyHandler(http.server.BaseHTTPRequestHandler):
     timeout = 10
 
-    def do_CONNECT(self) -> None:  # noqa: N802
-        setattr(threading.current_thread(), "_uvscem_proxy_handler", True)
+    def do_CONNECT(self) -> None:
+        threading.current_thread()._uvscem_proxy_handler = True  # type: ignore[attr-defined]
         target_host, _, target_port_raw = self.path.partition(":")
         target_port = int(target_port_raw) if target_port_raw else 443
 
@@ -58,7 +58,7 @@ class _NaiveForwardProxyHandler(http.server.BaseHTTPRequestHandler):
                         break
                     self.connection.sendall(data)
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A003
+    def log_message(self, format: str, *args) -> None:
         return None
 
 

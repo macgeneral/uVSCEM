@@ -45,12 +45,12 @@ class _ManagerStub:
 def _import_extension_manager(monkeypatch: pytest.MonkeyPatch):
     if "json5" not in sys.modules:
         json5_stub = types.ModuleType("json5")
-        setattr(json5_stub, "loads", lambda _value: {})
+        json5_stub.loads = lambda _value: {}  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "json5", json5_stub)
 
     if "requests" not in sys.modules:
         requests_stub = types.ModuleType("requests")
-        setattr(requests_stub, "Response", object)
+        requests_stub.Response = object  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "requests", requests_stub)
 
     if "dependency_algorithm" not in sys.modules:
@@ -63,7 +63,7 @@ def _import_extension_manager(monkeypatch: pytest.MonkeyPatch):
             def resolve_dependencies(self):
                 return []
 
-        setattr(dependency_stub, "Dependencies", _Dependencies)
+        dependency_stub.Dependencies = _Dependencies  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "dependency_algorithm", dependency_stub)
 
     if "uvscem.api_client" not in sys.modules:
@@ -72,7 +72,7 @@ def _import_extension_manager(monkeypatch: pytest.MonkeyPatch):
         class _CodeAPIManager:
             pass
 
-        setattr(api_stub, "CodeAPIManager", _CodeAPIManager)
+        api_stub.CodeAPIManager = _CodeAPIManager  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "uvscem.api_client", api_stub)
 
     if "uvscem.code_manager" not in sys.modules:
@@ -81,7 +81,7 @@ def _import_extension_manager(monkeypatch: pytest.MonkeyPatch):
         class _CodeManager:
             pass
 
-        setattr(code_stub, "CodeManager", _CodeManager)
+        code_stub.CodeManager = _CodeManager  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "uvscem.code_manager", code_stub)
 
     if "uvscem.extension_manager" in sys.modules:

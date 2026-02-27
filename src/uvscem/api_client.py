@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Iterator
 
 # for parsing devcontainer.json (if it includes comments etc.)
@@ -26,8 +25,6 @@ from uvscem.vscode_paths import resolve_vscode_root
 
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
-# VSCode extension installation directory
-vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
 
 JsonMap = dict[str, object]
@@ -158,7 +155,7 @@ class CodeAPIManager(object):
                 extension_id=extension_id,
                 include_latest_stable_version_only=include_latest_stable_version_only,
                 requested_version=requested_version,
-                vscode_root=vscode_root,
+                vscode_root=resolve_vscode_root(),
             )
             for item in result:
                 logger.debug(f"- {item.get('url', '')}")

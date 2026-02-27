@@ -29,6 +29,7 @@ uvscem = "uvscem.extension_manager:main"
 
 [dependency-groups]
 dev = [
+	"pytest>=8.0.0",
 	"ruff>=0.2.2",
 	"ty>=0.0.18",
 	"pytest-cov>=5.0.0",
@@ -59,7 +60,8 @@ src = ["src"]
 cache-dir = ".venv/.ruff_cache"
 
 [tool.ruff.lint]
-select = ["F", "I"]
+# F: Pyflakes, I: isort, B: flake8-bugbear, C4: flake8-comprehensions, RUF: Ruff-native
+select = ["F", "I", "B", "C4", "RUF"]
 
 [tool.ty.src]
 include = ["src"]

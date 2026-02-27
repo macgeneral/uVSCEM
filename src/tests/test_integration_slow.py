@@ -421,7 +421,7 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
         assert extension_id in set(ordered_extensions)
     finally:
         if code_binary:
-            for installed_extension_id in set(ordered_extensions + [extension_id]):
+            for installed_extension_id in {*ordered_extensions, extension_id}:
                 _uninstall_extension(code_binary, installed_extension_id)
 
 
