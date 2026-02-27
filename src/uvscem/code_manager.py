@@ -13,7 +13,6 @@ from typing import TypedDict
 
 from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
 
-# for parsing devcontainer.json (if it includes comments etc.)
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
 # VSCode extension installation directory

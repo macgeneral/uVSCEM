@@ -5,7 +5,6 @@ import asyncio
 import logging
 from typing import Iterator
 
-# for parsing devcontainer.json (if it includes comments etc.)
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
@@ -173,7 +172,7 @@ class CodeAPIManager:
                 vscode_root=resolve_vscode_root(),
             )
             for item in result:
-                logger.debug(f"- {item.get('url', '')}")
+                logger.debug("- %s", item.get("url", ""))
             extensions[extension_id] = result
         return extensions
 

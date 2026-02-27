@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import stat as _stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from dependency_algorithm import Dependencies
 
 from uvscem.api_client import CodeAPIManager
 from uvscem.bundle_io import _as_string_list
+from uvscem.bundle_workflow import export_offline_bundle, import_offline_bundle
 from uvscem.code_manager import CodeManager
 from uvscem.exceptions import (
     InstallationWorkflowError,
@@ -173,9 +175,22 @@ def _apply_network_options(
 
 
 def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
-    """Extract each member only after confirming its resolved path stays inside destination."""
+    """Extract each member only after confirming its resolved path stays inside destination.
+
+    Symlink members are rejected unconditionally: a malicious archive could
+    write a symlink first and then use it to escape the extraction root via a
+    subsequent member that writes *through* the symlink.
+    """
     destination_resolved = destination.resolve()
     for member in archive.infolist():
+        # Reject Unix symlinks embedded in the zip (create_system == 3 means Unix).
+        # The upper 16 bits of external_attr carry the Unix file-mode bits.
+        if member.create_system == 3:
+            unix_mode = member.external_attr >> 16
+            if _stat.S_ISLNK(unix_mode):
+                raise ValueError(
+                    f"Symlink member rejected from archive: {member.filename}"
+                )
         member_path = destination.joinpath(member.filename)
         try:
             member_resolved = member_path.resolve()
@@ -474,7 +489,7 @@ class CodeExtensionManager:
         )
         if not url:
             raise ValueError(f"Missing download URL for extension: {extension_id}")
-        headers: dict = {
+        headers: dict[str, str] = {
             "User-Agent": DEFAULT_USER_AGENT,
         }
 
@@ -519,7 +534,7 @@ class CodeExtensionManager:
         )
         if not url:
             raise ValueError(f"Missing signature URL for extension: {extension_id}")
-        headers: dict = {
+        headers: dict[str, str] = {
             "User-Agent": DEFAULT_USER_AGENT,
         }
 
@@ -591,7 +606,7 @@ class CodeExtensionManager:
 
     async def update_extensions_json(
         self, extension_id: str = "", extension_ids: list[str] | None = None
-    ):
+    ) -> None:
         self.installed = await self.find_installed()
         extension_ids = list(extension_ids or [])
 
@@ -869,13 +884,6 @@ def install(
         raise InstallationWorkflowError(
             _workflow_error_message("Extension installation", exc)
         ) from exc
-
-
-# Re-export bundle workflow functions so existing call sites (tests, CLI) keep working.
-from uvscem.bundle_workflow import (
-    export_offline_bundle,
-    import_offline_bundle,
-)
 
 
 def build_parser() -> argparse.ArgumentParser:

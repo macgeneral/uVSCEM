@@ -32,6 +32,7 @@ def stream_download_to_target(
     headers: dict[str, str],
     temp_prefix: str,
     timeout: tuple[int, int],
+    max_bytes: int | None = None,
 ) -> Path:
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as tmp_dir:
         file_path = Path(tmp_dir, target_path.name)
@@ -45,8 +46,14 @@ def stream_download_to_target(
             )
             response.raise_for_status()
 
+            total = 0
             for chunk in response.iter_content(chunk_size=1024 * 8):
                 if chunk:
+                    total += len(chunk)
+                    if max_bytes is not None and total > max_bytes:
+                        raise ValueError(
+                            f"Download from {url} exceeded maximum allowed size ({max_bytes} bytes)"
+                        )
                     output.write(chunk)
             output.flush()
             os.fsync(output.fileno())

@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import runpy
+import stat
 import subprocess
 import sys
 import tempfile
@@ -865,6 +866,59 @@ def test_install_extension_manually_rejects_unsafe_archive_member(
                 "pub.ext", vsix_path, update_json=False
             )
         )
+
+
+def test_install_extension_manually_rejects_symlink_archive_member(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "vscode-root"
+    bare_manager._vscode_root = root
+    bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
+
+    vsix_path = tmp_path / "pub.ext-1.0.0.vsix"
+    with zipfile.ZipFile(vsix_path, "w") as archive:
+        info = zipfile.ZipInfo("extension/link")
+        info.create_system = 3  # Unix
+        info.external_attr = (stat.S_IFLNK | 0o755) << 16
+        archive.writestr(info, "/etc/passwd")
+
+    with pytest.raises(ValueError, match="Symlink member rejected"):
+        asyncio.run(
+            bare_manager.install_extension_manually(
+                "pub.ext", vsix_path, update_json=False
+            )
+        )
+
+
+def test_install_extension_manually_accepts_unix_regular_file_member(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+) -> None:
+    """Unix-tagged (create_system=3) non-symlink and non-Unix (create_system=0) members
+    must both pass the symlink check and be extracted normally."""
+    root = tmp_path / "vscode-root"
+    bare_manager._vscode_root = root
+    bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
+
+    vsix_path = tmp_path / "pub.ext-1.0.0.vsix"
+    with zipfile.ZipFile(vsix_path, "w") as archive:
+        # Unix regular file — enter the create_system==3 branch, but S_ISLNK is False
+        info_unix = zipfile.ZipInfo("extension/package.json")
+        info_unix.create_system = 3
+        info_unix.external_attr = (stat.S_IFREG | 0o644) << 16
+        archive.writestr(info_unix, "{}")
+
+        # Non-Unix member (create_system=0, e.g. Windows) — skips the symlink branch
+        info_win = zipfile.ZipInfo("extension/README.md")
+        info_win.create_system = 0
+        info_win.external_attr = 0
+        archive.writestr(info_win, "readme")
+
+    # Should complete without raising
+    asyncio.run(
+        bare_manager.install_extension_manually("pub.ext", vsix_path, update_json=False)
+    )
 
 
 def test_update_extensions_json_success_path(
@@ -4085,3 +4139,30 @@ def test_install_extension_fallback_without_wrapper_extensions_dir(
     )
 
     assert manual_calls == [("pub.ext", True)]
+
+
+def test_stream_download_to_target_enforces_max_bytes(tmp_path: Path) -> None:
+    """stream_download_to_target raises ValueError when total bytes exceed max_bytes."""
+    from uvscem.install_engine import stream_download_to_target
+
+    class _BigResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def iter_content(self, chunk_size: int = 1):
+            yield b"1234567890"  # 10 bytes
+
+    class _OverSession:
+        def get(self, url, *, stream, headers, timeout):
+            return _BigResponse()
+
+    with pytest.raises(ValueError, match="exceeded maximum allowed size"):
+        stream_download_to_target(
+            session=_OverSession(),
+            url="https://marketplace.visualstudio.com/ext.vsix",
+            target_path=tmp_path / "ext.vsix",
+            headers={},
+            temp_prefix="test.",
+            timeout=(5, 10),
+            max_bytes=5,
+        )

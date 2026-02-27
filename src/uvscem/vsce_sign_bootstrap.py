@@ -21,6 +21,8 @@ from urllib.parse import quote
 import requests
 
 DEFAULT_VSCE_SIGN_VERSION = "2.0.6"
+# Hard cap on tarball download size; vsce-sign packages are a few MB at most.
+_MAX_TARBALL_BYTES = 50 * 1024 * 1024  # 50 MB
 PACKAGE_PREFIX = "@vscode/vsce-sign-"
 SUPPORTED_VSCE_SIGN_TARGETS = (
     "linux-x64",
@@ -43,7 +45,9 @@ class RegistrySession(Protocol):
     # Controls TLS certificate verification; mirrors requests.Session.verify.
     verify: bool | str
 
-    def get(self, url: str, *, timeout: int) -> requests.Response: ...
+    def get(
+        self, url: str, *, timeout: int, stream: bool = False
+    ) -> requests.Response: ...
 
 
 @dataclass
@@ -117,6 +121,25 @@ def _verify_npm_integrity(tarball_bytes: bytes, integrity: str) -> None:
         )
 
 
+def _fetch_tarball_bytes(
+    url: str, session: RegistrySession, timeout: int = 60
+) -> bytes:
+    """Stream-download a tarball, rejecting payloads that exceed _MAX_TARBALL_BYTES."""
+    response = session.get(url, timeout=timeout, stream=True)
+    response.raise_for_status()
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=65536):
+        if chunk:
+            total += len(chunk)
+            if total > _MAX_TARBALL_BYTES:
+                raise VsceSignBootstrapError(
+                    f"npm tarball exceeds maximum allowed size ({_MAX_TARBALL_BYTES} bytes)"
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _fetch_package_info(
     package_name: str,
     version: str,
@@ -171,21 +194,6 @@ def _extract_binary_bytes_from_tarball(
         return extracted.read()
 
 
-def _expected_binary_sha512(
-    package_name: str,
-    version: str,
-    binary_name: str,
-    session: RegistrySession,
-) -> str:
-    tarball_url, integrity = _fetch_package_info(package_name, version, session)
-    tarball_response = session.get(tarball_url, timeout=60)
-    tarball_response.raise_for_status()
-    tarball_bytes = tarball_response.content
-    _verify_npm_integrity(tarball_bytes, integrity)
-    expected_bytes = _extract_binary_bytes_from_tarball(tarball_bytes, binary_name)
-    return hashlib.sha512(expected_bytes).hexdigest()
-
-
 def install_vsce_sign_binary(
     install_dir: str | Path,
     version: str = DEFAULT_VSCE_SIGN_VERSION,
@@ -214,44 +222,50 @@ def install_vsce_sign_binary_for_target(
     verify_existing_checksum: bool = True,
 ) -> Path:
     """Install vsce-sign binary for a specific npm platform target."""
+    if target not in SUPPORTED_VSCE_SIGN_TARGETS:
+        raise VsceSignBootstrapError(f"Unsupported vsce-sign target: {target!r}")
     package_name = get_vsce_sign_package_name(target)
     install_path = Path(install_dir).expanduser().resolve()
     binary_name = _binary_name_for_target(target)
     binary_path = install_path.joinpath(binary_name)
-    if session is not None:
-        session_client: RegistrySession = session
-    else:
-        session_client = requests.Session()
+    session_client: RegistrySession = (
+        session if session is not None else requests.Session()
+    )
+
+    # binary_bytes is set here when the checksum branch already fetched the
+    # tarball so the install branch can reuse it without a second download.
+    binary_bytes: bytes | None = None
 
     if binary_path.is_file() and not force:
         if not verify_existing_checksum:
             return binary_path
-        expected_digest = _expected_binary_sha512(
-            package_name=package_name,
-            version=version,
-            binary_name=binary_name,
-            session=session_client,
+        # Fetch and verify once; carry bytes forward if checksum fails.
+        tarball_url, integrity = _fetch_package_info(
+            package_name, version, session_client
         )
+        tarball_bytes = _fetch_tarball_bytes(tarball_url, session_client)
+        _verify_npm_integrity(tarball_bytes, integrity)
+        candidate_bytes = _extract_binary_bytes_from_tarball(tarball_bytes, binary_name)
+        expected_digest = hashlib.sha512(candidate_bytes).hexdigest()
         actual_digest = hashlib.sha512(binary_path.read_bytes()).hexdigest()
         if actual_digest == expected_digest:
             return binary_path
-        force = True
+        binary_bytes = candidate_bytes
 
     install_path.mkdir(parents=True, exist_ok=True)
-    tarball_url, integrity = _fetch_package_info(package_name, version, session_client)
-    tarball_response = session_client.get(tarball_url, timeout=60)
-    tarball_response.raise_for_status()
-    tarball_bytes = tarball_response.content
-    _verify_npm_integrity(tarball_bytes, integrity)
-    binary_bytes = _extract_binary_bytes_from_tarball(tarball_bytes, binary_name)
+    if binary_bytes is None:
+        tarball_url, integrity = _fetch_package_info(
+            package_name, version, session_client
+        )
+        tarball_bytes = _fetch_tarball_bytes(tarball_url, session_client)
+        _verify_npm_integrity(tarball_bytes, integrity)
+        binary_bytes = _extract_binary_bytes_from_tarball(tarball_bytes, binary_name)
 
-    with NamedTemporaryFile(delete=False, dir=install_path) as tmp_file:
+    with NamedTemporaryFile(delete=False, dir=install_path, mode="wb") as tmp_file:
+        tmp_file.write(binary_bytes)
         tmp_target = Path(tmp_file.name)
 
     try:
-        with open(tmp_target, "wb") as output:
-            output.write(binary_bytes)
-
         if binary_name == "vsce-sign":
             current_mode = os.stat(tmp_target).st_mode
             os.chmod(

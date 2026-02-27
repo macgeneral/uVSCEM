@@ -8,6 +8,7 @@ import runpy
 import sys
 import tarfile
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,10 @@ class _Response:
     def json(self):
         return self._payload
 
+    def iter_content(self, chunk_size: int = 1) -> Iterator[bytes]:
+        if self.content:
+            yield self.content
+
 
 class _Session:
     verify: bool | str = True
@@ -35,7 +40,7 @@ class _Session:
         self.responses = responses
         self.calls: list[str] = []
 
-    def get(self, url: str, timeout: int):
+    def get(self, url: str, timeout: int, stream: bool = False):
         self.calls.append(url)
         response = self.responses.get(url)
         if response is None:
@@ -369,6 +374,9 @@ def test_install_existing_binary_checksum_mismatch_reinstalls(
         session=session,
     )
 
+    # Tarball should be fetched exactly once even though a checksum mismatch
+    # triggered the reinstall (no second download on the install path).
+    assert session.calls.count(tarball_url) == 1
     assert installed == existing
     assert existing.read_bytes() == b"new"
 
@@ -715,7 +723,11 @@ def test_install_vsce_sign_binary_unlinks_temp_file_on_replace_failure(
     class _Tmp:
         def __enter__(self):
             tmp_created.write_bytes(b"")
-            return type("_TmpFile", (), {"name": str(tmp_created)})()
+            return type(
+                "_TmpFile",
+                (),
+                {"name": str(tmp_created), "write": lambda self, _b: None},
+            )()
 
         def __exit__(self, exc_type, exc, tb):
             return False
@@ -847,6 +859,16 @@ def test_module_main_guard_executes_main(monkeypatch: pytest.MonkeyPatch) -> Non
     assert exc.value.code == 0
 
 
+def test_install_vsce_sign_binary_for_target_rejects_unknown_target(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(VsceSignBootstrapError, match="Unsupported vsce-sign target"):
+        vsce_sign_bootstrap.install_vsce_sign_binary_for_target(
+            target="haiku-riscv64",
+            install_dir=tmp_path,
+        )
+
+
 def test_install_vsce_sign_binary_for_target_uses_default_session_when_none_provided(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -871,3 +893,110 @@ def test_install_vsce_sign_binary_for_target_uses_default_session_when_none_prov
     )
 
     assert result == binary_path
+
+
+def test_checksum_verify_rejects_oversized_tarball(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_expected_binary_sha512 raises when the tarball exceeds _MAX_TARBALL_BYTES."""
+    monkeypatch.setattr(vsce_sign_bootstrap, "_MAX_TARBALL_BYTES", 4)
+    monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(vsce_sign_bootstrap.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(vsce_sign_bootstrap, "_is_musl_linux", lambda: False)
+
+    oversized = b"12345"  # 5 bytes > cap of 4
+    package_url = "https://registry.npmjs.org/%40vscode%2Fvsce-sign-linux-x64"
+    tarball_url = "https://example.com/pkg.tgz"
+    session = _Session(
+        {
+            package_url: _Response(
+                {
+                    "versions": {
+                        "2.0.6": {
+                            "dist": {
+                                "tarball": tarball_url,
+                                "integrity": _sha512_integrity(oversized),
+                            }
+                        }
+                    }
+                }
+            ),
+            tarball_url: _Response(content=oversized),
+        }
+    )
+
+    existing = tmp_path / "vsce-sign"
+    existing.write_bytes(b"old")
+
+    with pytest.raises(VsceSignBootstrapError, match="exceeds maximum allowed size"):
+        vsce_sign_bootstrap.install_vsce_sign_binary(
+            install_dir=tmp_path,
+            version="2.0.6",
+            force=False,
+            session=session,
+            verify_existing_checksum=True,
+        )
+
+
+def test_install_vsce_sign_binary_for_target_rejects_oversized_tarball(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """install_vsce_sign_binary_for_target raises when the tarball exceeds _MAX_TARBALL_BYTES."""
+    monkeypatch.setattr(vsce_sign_bootstrap, "_MAX_TARBALL_BYTES", 4)
+    monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(vsce_sign_bootstrap.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(vsce_sign_bootstrap, "_is_musl_linux", lambda: False)
+
+    oversized = b"12345"  # 5 bytes > cap of 4
+    package_url = "https://registry.npmjs.org/%40vscode%2Fvsce-sign-linux-x64"
+    tarball_url = "https://example.com/pkg.tgz"
+    session = _Session(
+        {
+            package_url: _Response(
+                {
+                    "versions": {
+                        "2.0.6": {
+                            "dist": {
+                                "tarball": tarball_url,
+                                "integrity": _sha512_integrity(oversized),
+                            }
+                        }
+                    }
+                }
+            ),
+            tarball_url: _Response(content=oversized),
+        }
+    )
+
+    with pytest.raises(VsceSignBootstrapError, match="exceeds maximum allowed size"):
+        vsce_sign_bootstrap.install_vsce_sign_binary(
+            install_dir=tmp_path,
+            version="2.0.6",
+            force=True,
+            session=session,
+        )
+
+
+def test_fetch_tarball_bytes_handles_empty_chunks() -> None:
+    """_fetch_tarball_bytes skips empty chunks and returns only real content."""
+
+    class _SparseResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def iter_content(self, chunk_size: int = 1) -> Iterator[bytes]:
+            yield b""  # empty chunk that requests occasionally emits
+            yield b"hello"
+
+    class _SparseSession:
+        verify: bool | str = True
+
+        def get(self, url: str, *, timeout: int, stream: bool = False):
+            return _SparseResponse()
+
+    result = vsce_sign_bootstrap._fetch_tarball_bytes(
+        "https://example.com/x.tgz", _SparseSession()
+    )
+    assert result == b"hello"
