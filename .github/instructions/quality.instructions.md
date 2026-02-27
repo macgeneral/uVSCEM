@@ -25,9 +25,12 @@ Activate environment first:
 
 1. `uv sync --group dev`
 2. `uv run ruff check .`
-3. `uv run ty check`
-4. `uv run pytest src`
-5. `uv run pytest src --slow --no-cov`
+3. `uv run ruff format .`
+4. `uv run ty check`
+5. `uv run pytest src`
+6. `uv run pytest src --slow --no-cov`
+
+`uv run pytest src` runs the full test suite with branch coverage reporting — coverage settings come from `addopts` in `pyproject.toml`. The run must reach **100% branch coverage** (`--cov-fail-under=100`) to pass. A summary is printed at the end of the run; full details are written to `coverage.xml`.
 
 ## Completion criteria
 

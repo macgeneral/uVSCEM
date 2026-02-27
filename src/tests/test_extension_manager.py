@@ -4194,6 +4194,17 @@ def test_import_offline_bundle_rejects_invalid_log_level(tmp_path: Path) -> None
         )
 
 
+def test_export_offline_bundle_rejects_invalid_log_level(tmp_path: Path) -> None:
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid log level"):
+        bundle_workflow.export_offline_bundle(
+            config_name=str(config_file),
+            log_level="verbose",
+        )
+
+
 def test_import_offline_bundle_rejects_artifact_path_traversal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
