@@ -11,15 +11,11 @@ import tempfile
 from pathlib import Path
 from typing import TypedDict
 
-from uvscem.internal_config import DEFAULT_USER_AGENT, MAX_INSTALL_RETRIES
 from uvscem.vscode_paths import detect_runtime_environment, resolve_vscode_root
 
 # for parsing devcontainer.json (if it includes comments etc.)
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
-# attempt to install an extension a maximum of three times
-max_retries = MAX_INSTALL_RETRIES
-user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
@@ -44,7 +40,7 @@ def _parse_version_tuple(version: str) -> tuple[int, ...] | None:
 def _parse_remote_cli_metadata(launcher_path: Path) -> tuple[str, str] | None:
     version: str = ""
     commit: str = ""
-    with open(launcher_path, "r") as launcher:
+    with open(launcher_path, "r", encoding="utf-8") as launcher:
         for line in launcher:
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or "=" not in stripped:

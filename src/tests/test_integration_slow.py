@@ -10,13 +10,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import requests
 
 import uvscem.code_manager as code_manager_module
 import uvscem.extension_manager as extension_manager_module
 from uvscem.extension_manager import CodeExtensionManager
 from uvscem.vsce_sign_bootstrap import provision_vsce_sign_binary_for_run
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.filterwarnings("error")]
 
 
 ASSETS_DIR = Path(__file__).parent / "assets"
@@ -240,6 +241,64 @@ def test_integration_tampered_vsix_fails_signature_verification(tmp_path: Path) 
 
 
 @pytest.mark.slow
+def test_integration_http_store_access_with_allow_http_uses_initial_http_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = ASSETS_DIR / "test_extensions.json"
+    extension_id = "dbaeumer.vscode-eslint"
+    _clear_cached_extension_artifacts(tmp_path, extension_id)
+
+    metadata_manager = CodeExtensionManager(
+        config_name=str(config_path),
+        code_path=shutil.which("code") or "code",
+        target_directory=str(_artifact_cache_dir(tmp_path, "downloads-http")),
+    )
+    metadata_map = asyncio.run(
+        metadata_manager.api_manager.get_extension_metadata(extension_id)
+    )
+    versions = metadata_map.get(extension_id, [])
+    if not versions:
+        pytest.skip("Could not resolve extension metadata for slow integration test")
+
+    manager = CodeExtensionManager(
+        config_name=str(config_path),
+        code_path=shutil.which("code") or "code",
+        target_directory=str(_artifact_cache_dir(tmp_path, "downloads-http")),
+        allow_http=True,
+    )
+
+    metadata = dict(versions[0])
+    original_url = str(metadata.get("url", ""))
+    if not original_url.startswith("https://"):
+        pytest.skip(
+            "Extension URL did not resolve to HTTPS, cannot build HTTP test URL"
+        )
+
+    metadata["url"] = original_url.replace("https://", "http://", 1)
+    manager.extension_metadata[extension_id] = metadata
+
+    requested_urls: list[str] = []
+
+    def _recording_get(url: str, *args, **kwargs):
+        del args, kwargs
+        requested_urls.append(str(url))
+        raise requests.RequestException("stop after initial request capture")
+
+    monkeypatch.setattr(manager.api_manager.session, "get", _recording_get)
+
+    try:
+        vsix_path = asyncio.run(manager.download_extension(extension_id))
+        assert vsix_path.is_file()
+        assert vsix_path.stat().st_size > 0
+    except requests.RequestException:
+        pass
+
+    assert requested_urls
+    assert requested_urls[0].startswith("http://")
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "extension_id",
     ["dbaeumer.vscode-eslint", "cristianvasquez1312.hadar-vscode"],
@@ -356,6 +415,7 @@ def test_integration_offline_bundle_import_ci_compatible_with_misconfigured_prox
                 target_path=str(tmp_path / "import-cache"),
                 code_path=code_binary,
                 strict_offline=True,
+                verify_manifest_signature=False,
             )
 
         assert extension_id in set(ordered_extensions)
@@ -416,6 +476,7 @@ def test_integration_offline_bundle_import_local_vscode_install_with_misconfigur
             target_path=str(tmp_path / "import-cache-local"),
             code_path=isolated_code_binary,
             strict_offline=True,
+            verify_manifest_signature=False,
         )
 
     installed = _installed_extensions(isolated_code_binary)

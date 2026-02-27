@@ -45,7 +45,8 @@ def bare_manager(tmp_path: Path) -> CodeExtensionManager:
     manager.target_path.mkdir(parents=True, exist_ok=True)
     manager.allow_unsigned = True
     manager.allow_untrusted_urls = False
-    manager.disable_ssl = False
+    manager.allow_http = False
+    manager.disable_ssl_verification = False
     manager.ca_bundle = ""
     return manager
 
@@ -395,6 +396,52 @@ def test_download_extension_rejects_untrusted_host(
 
     with pytest.raises(ValueError, match="not trusted"):
         asyncio.run(bare_manager.download_extension("pub.ext"))
+
+
+def test_download_extension_rejects_http_by_default(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "url": "http://marketplace.visualstudio.com/file.vsix",
+        }
+    }
+
+    with pytest.raises(ValueError, match="must use https"):
+        asyncio.run(bare_manager.download_extension("pub.ext"))
+
+
+def test_download_extension_allows_http_when_allow_http_enabled(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.allow_http = True
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "url": "http://marketplace.visualstudio.com/file.vsix",
+        }
+    }
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            assert chunk_size == 1024 * 8
+            yield b"http-ok"
+
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+        ),
+    )
+
+    downloaded = asyncio.run(bare_manager.download_extension("pub.ext"))
+
+    assert downloaded.is_file()
+    assert downloaded.read_bytes() == b"http-ok"
 
 
 def test_download_extension_allows_untrusted_host_when_flag_enabled(
@@ -1072,6 +1119,109 @@ def test_install_extension_downloads_when_file_missing(
     asyncio.run(bare_manager.install_extension("pub.ext"))
 
 
+def test_install_extension_skips_manual_extraction_when_managed_dir_exists(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "extension_pack": []}
+    }
+    file_path = bare_manager.target_path / "pub.ext-1.0.0.vsix"
+    file_path.write_text("payload")
+
+    managed_root = tmp_path / "managed-vscode-root"
+    expected_dir = managed_root / "extensions" / "pub.ext-1.0.0"
+    expected_dir.mkdir(parents=True, exist_ok=True)
+
+    manual_calls: list[str] = []
+
+    async def _manual(
+        extension_id: str, extension_path: Path, update_json: bool = True
+    ) -> None:
+        del extension_path, update_json
+        manual_calls.append(extension_id)
+
+    monkeypatch.setattr(extension_manager, "vscode_root", managed_root)
+    monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="ok", stderr=""),
+    )
+
+    asyncio.run(bare_manager.install_extension("pub.ext"))
+
+    assert manual_calls == []
+
+
+def test_install_extension_warns_for_non_zip_when_managed_dir_missing(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "extension_pack": []}
+    }
+    file_path = bare_manager.target_path / "pub.ext-1.0.0.vsix"
+    file_path.write_text("payload")
+
+    warnings: list[str] = []
+
+    async def _manual(
+        extension_id: str, extension_path: Path, update_json: bool = True
+    ) -> None:
+        raise AssertionError("manual extraction should not run for non-zip VSIX")
+
+    monkeypatch.setattr(extension_manager, "vscode_root", tmp_path / "vscode-root")
+    monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
+    monkeypatch.setattr(
+        extension_manager.logger, "warning", lambda msg: warnings.append(msg)
+    )
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="ok", stderr=""),
+    )
+
+    asyncio.run(bare_manager.install_extension("pub.ext"))
+
+    assert any("not a zip archive" in message for message in warnings)
+
+
+def test_install_extension_runs_manual_extraction_for_valid_zip_when_missing(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "extension_pack": []}
+    }
+    file_path = bare_manager.target_path / "pub.ext-1.0.0.vsix"
+    with zipfile.ZipFile(file_path, "w") as archive:
+        archive.writestr("extension/package.json", "{}")
+
+    manual_calls: list[tuple[str, bool]] = []
+
+    async def _manual(
+        extension_id: str, extension_path: Path, update_json: bool = True
+    ) -> None:
+        del extension_path
+        manual_calls.append((extension_id, update_json))
+
+    monkeypatch.setattr(extension_manager, "vscode_root", tmp_path / "vscode-root")
+    monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="ok", stderr=""),
+    )
+
+    asyncio.run(bare_manager.install_extension("pub.ext"))
+
+    assert manual_calls == [("pub.ext", True)]
+
+
 def test_install_extension_verifies_signature_when_present(
     bare_manager: CodeExtensionManager,
     monkeypatch: pytest.MonkeyPatch,
@@ -1360,7 +1510,8 @@ def test_cli_install_function_uses_expected_constructor_args(
             target_directory: str = "",
             allow_unsigned: bool = False,
             allow_untrusted_urls: bool = False,
-            disable_ssl: bool = False,
+            allow_http: bool = False,
+            disable_ssl_verification: bool = False,
             ca_bundle: str = "",
         ) -> None:
             captured["config_name"] = config_name
@@ -1368,7 +1519,8 @@ def test_cli_install_function_uses_expected_constructor_args(
             captured["target_directory"] = target_directory
             captured["allow_unsigned"] = allow_unsigned
             captured["allow_untrusted_urls"] = allow_untrusted_urls
-            captured["disable_ssl"] = disable_ssl
+            captured["allow_http"] = allow_http
+            captured["disable_ssl_verification"] = disable_ssl_verification
             captured["ca_bundle"] = ca_bundle
 
         async def initialize(self) -> None:
@@ -1392,7 +1544,8 @@ def test_cli_install_function_uses_expected_constructor_args(
         "target_directory": str(target_path),
         "allow_unsigned": False,
         "allow_untrusted_urls": False,
-        "disable_ssl": False,
+        "allow_http": False,
+        "disable_ssl_verification": False,
         "ca_bundle": "",
         "initialized": True,
         "installed": True,
@@ -1414,7 +1567,8 @@ def test_cli_install_function_maps_errors_to_installation_workflow_error(
             target_directory: str = "",
             allow_unsigned: bool = False,
             allow_untrusted_urls: bool = False,
-            disable_ssl: bool = False,
+            allow_http: bool = False,
+            disable_ssl_verification: bool = False,
             ca_bundle: str = "",
         ) -> None:
             del (
@@ -1423,7 +1577,8 @@ def test_cli_install_function_maps_errors_to_installation_workflow_error(
                 target_directory,
                 allow_unsigned,
                 allow_untrusted_urls,
-                disable_ssl,
+                allow_http,
+                disable_ssl_verification,
                 ca_bundle,
             )
 
@@ -1677,7 +1832,7 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         extension_manager,
         "install",
-        lambda config_name, code_path, target_path, log_level, allow_unsigned, allow_untrusted_urls, disable_ssl, ca_bundle: (
+        lambda config_name, code_path, target_path, log_level, allow_unsigned, allow_untrusted_urls, allow_http, disable_ssl_verification, ca_bundle: (
             called.update(
                 {
                     "config_name": config_name,
@@ -1686,7 +1841,8 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
                     "log_level": log_level,
                     "allow_unsigned": str(allow_unsigned),
                     "allow_untrusted_urls": str(allow_untrusted_urls),
-                    "disable_ssl": str(disable_ssl),
+                    "allow_http": str(allow_http),
+                    "disable_ssl_verification": str(disable_ssl_verification),
                     "ca_bundle": ca_bundle,
                 }
             )
@@ -1712,7 +1868,8 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
         "log_level": "debug",
         "allow_unsigned": "False",
         "allow_untrusted_urls": "False",
-        "disable_ssl": "False",
+        "allow_http": "False",
+        "disable_ssl_verification": "False",
         "ca_bundle": "",
     }
 
@@ -1735,7 +1892,7 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         extension_manager,
         "export_offline_bundle",
-        lambda config_name, bundle_path, target_path, code_path, log_level, vsce_sign_version, vsce_sign_targets, manifest_signing_key, allow_untrusted_urls, disable_ssl, ca_bundle: (
+        lambda config_name, bundle_path, target_path, code_path, log_level, vsce_sign_version, vsce_sign_targets, manifest_signing_key, allow_untrusted_urls, allow_http, disable_ssl_verification, ca_bundle: (
             called.update(
                 {
                     "config_name": config_name,
@@ -1747,7 +1904,8 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
                     "vsce_sign_targets": vsce_sign_targets,
                     "manifest_signing_key": manifest_signing_key,
                     "allow_untrusted_urls": str(allow_untrusted_urls),
-                    "disable_ssl": str(disable_ssl),
+                    "allow_http": str(allow_http),
+                    "disable_ssl_verification": str(disable_ssl_verification),
                     "ca_bundle": ca_bundle,
                 }
             )
@@ -1781,24 +1939,27 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
         "vsce_sign_targets": "current",
         "manifest_signing_key": "ABC123",
         "allow_untrusted_urls": "False",
-        "disable_ssl": "False",
+        "allow_http": "False",
+        "disable_ssl_verification": "False",
         "ca_bundle": "",
     }
 
 
-def test_configure_http_session_disable_ssl_and_ca_bundle() -> None:
+def test_configure_http_session_disable_ssl_and_ca_bundle(tmp_path: Path) -> None:
+    ca_file = tmp_path / "custom-ca.pem"
+    ca_file.write_text("cert", encoding="utf-8")
     session = SimpleNamespace(verify=True)
 
     extension_manager._configure_http_session(
         session,
-        disable_ssl=False,
-        ca_bundle="/tmp/custom-ca.pem",
+        disable_ssl_verification=False,
+        ca_bundle=str(ca_file),
     )
-    assert session.verify == "/tmp/custom-ca.pem"
+    assert session.verify == str(ca_file)
 
     extension_manager._configure_http_session(
         session,
-        disable_ssl=True,
+        disable_ssl_verification=True,
         ca_bundle="/tmp/custom-ca.pem",
     )
     assert session.verify is False
@@ -1809,7 +1970,7 @@ def test_configure_http_session_leaves_verify_unchanged_without_flags() -> None:
 
     extension_manager._configure_http_session(
         session,
-        disable_ssl=False,
+        disable_ssl_verification=False,
         ca_bundle="",
     )
 
@@ -1823,7 +1984,8 @@ def test_apply_network_options_without_api_manager_session() -> None:
         manager,
         allow_unsigned=True,
         allow_untrusted_urls=True,
-        disable_ssl=False,
+        allow_http=False,
+        disable_ssl_verification=False,
         ca_bundle="",
     )
 
@@ -1831,7 +1993,9 @@ def test_apply_network_options_without_api_manager_session() -> None:
     assert manager.allow_untrusted_urls is True
 
 
-def test_apply_network_options_with_api_manager_session() -> None:
+def test_apply_network_options_with_api_manager_session(tmp_path: Path) -> None:
+    ca_file = tmp_path / "custom-ca.pem"
+    ca_file.write_text("cert", encoding="utf-8")
     manager = SimpleNamespace(
         api_manager=SimpleNamespace(session=SimpleNamespace(verify=True))
     )
@@ -1840,11 +2004,147 @@ def test_apply_network_options_with_api_manager_session() -> None:
         manager,
         allow_unsigned=False,
         allow_untrusted_urls=False,
-        disable_ssl=False,
-        ca_bundle="/tmp/custom-ca.pem",
+        allow_http=False,
+        disable_ssl_verification=False,
+        ca_bundle=str(ca_file),
     )
 
-    assert manager.api_manager.session.verify == "/tmp/custom-ca.pem"
+    assert manager.api_manager.session.verify == str(ca_file)
+
+
+def test_configure_http_session_raises_on_invalid_ca_bundle() -> None:
+    session = SimpleNamespace(verify=True)
+    with pytest.raises(ValueError, match="CA bundle path is not a readable file"):
+        extension_manager._configure_http_session(
+            session,
+            disable_ssl_verification=False,
+            ca_bundle="/nonexistent/path/ca.pem",
+        )
+
+
+def test_find_installed_returns_empty_when_file_missing(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "no-such-file.json"
+    monkeypatch.setattr(bare_manager, "extensions_json_path", lambda: missing)
+    result = asyncio.run(bare_manager.find_installed())
+    assert result == []
+
+
+def test_write_json_atomic_cleans_up_temp_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "out.json"
+    import json as _json
+
+    original_dump = _json.dump
+
+    def _fail_dump(*args: Any, **kwargs: Any) -> None:
+        original_dump(*args, **kwargs)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(extension_manager.json, "dump", _fail_dump)
+
+    with pytest.raises(OSError, match="disk full"):
+        extension_manager._write_json_atomic(target, {"key": "value"})
+
+    assert not target.exists()
+    leftovers = list(tmp_path.glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_main_install_command_catches_unexpected_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        extension_manager,
+        "install",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unexpected")),
+    )
+    monkeypatch.setattr(
+        extension_manager.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(
+            command="install",
+            config_name=str(config_file),
+            code_path="code",
+            target_path="",
+            log_level="info",
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        extension_manager.main()
+    assert exc_info.value.code == 1
+
+
+def test_main_export_command_catches_unexpected_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
+    bundle_path = tmp_path / "bundle"
+
+    monkeypatch.setattr(
+        extension_manager,
+        "export_offline_bundle",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unexpected")),
+    )
+    monkeypatch.setattr(
+        extension_manager.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(
+            command="export",
+            config_name=str(config_file),
+            bundle_path=str(bundle_path),
+            target_path="",
+            code_path="code",
+            log_level="info",
+            vsce_sign_version="2.0.6",
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        extension_manager.main()
+    assert exc_info.value.code == 1
+
+
+def test_main_import_command_catches_unexpected_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+
+    monkeypatch.setattr(
+        extension_manager,
+        "import_offline_bundle",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unexpected")),
+    )
+    monkeypatch.setattr(
+        extension_manager.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(
+            command="import",
+            config_name="devcontainer.json",
+            bundle_path=str(bundle_path),
+            target_path="",
+            code_path="code",
+            log_level="info",
+            vsce_sign_version="2.0.6",
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        extension_manager.main()
+    assert exc_info.value.code == 1
 
 
 def test_main_routes_import_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1897,6 +2197,61 @@ def test_main_routes_import_command(monkeypatch: pytest.MonkeyPatch) -> None:
         "strict_offline": "True",
         "verify_manifest_signature": "True",
         "manifest_verification_keyring": str(keyring_path),
+    }
+
+
+def test_main_routes_import_command_with_skip_manifest_signature_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, str] = {}
+    cache_path = Path(tempfile.gettempdir()) / "cache"
+    bundle_path = Path(tempfile.gettempdir()) / "bundle"
+
+    monkeypatch.setattr(
+        extension_manager,
+        "import_offline_bundle",
+        lambda bundle_path, code_path, target_path, log_level, strict_offline, verify_manifest_signature, manifest_verification_keyring: (
+            called.update(
+                {
+                    "bundle_path": bundle_path,
+                    "code_path": code_path,
+                    "target_path": target_path,
+                    "log_level": log_level,
+                    "strict_offline": str(strict_offline),
+                    "verify_manifest_signature": str(verify_manifest_signature),
+                    "manifest_verification_keyring": manifest_verification_keyring,
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        extension_manager.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(
+            command="import",
+            config_name="cfg.json",
+            bundle_path=str(bundle_path),
+            target_path=str(cache_path),
+            code_path="code-bin",
+            log_level="debug",
+            vsce_sign_version="2.0.6",
+            strict_offline=True,
+            verify_manifest_signature=False,
+            skip_manifest_signature_verification=True,
+            manifest_verification_keyring="",
+        ),
+    )
+
+    extension_manager.main()
+
+    assert called == {
+        "bundle_path": str(bundle_path),
+        "code_path": "code-bin",
+        "target_path": str(cache_path),
+        "log_level": "debug",
+        "strict_offline": "True",
+        "verify_manifest_signature": "False",
+        "manifest_verification_keyring": "",
     }
 
 
@@ -2029,7 +2384,11 @@ def test_export_offline_bundle_writes_manifest_and_artifacts(
 
     class _ExportManager:
         def __init__(
-            self, config_name: str, code_path: str, target_directory: str = ""
+            self,
+            config_name: str,
+            code_path: str,
+            target_directory: str = "",
+            **_: object,
         ) -> None:
             self.config_name = config_name
             self.code_path = code_path
@@ -2121,7 +2480,11 @@ def test_export_offline_bundle_signs_manifest_when_key_is_provided(
 
     class _ExportManager:
         def __init__(
-            self, config_name: str, code_path: str, target_directory: str = ""
+            self,
+            config_name: str,
+            code_path: str,
+            target_directory: str = "",
+            **_: object,
         ) -> None:
             del config_name, code_path
             self.target_path = Path(target_directory)
@@ -2200,7 +2563,11 @@ def test_export_offline_bundle_supports_all_vsce_sign_targets(
 
     class _ExportManager:
         def __init__(
-            self, config_name: str, code_path: str, target_directory: str = ""
+            self,
+            config_name: str,
+            code_path: str,
+            target_directory: str = "",
+            **_: object,
         ) -> None:
             del config_name, code_path
             self.target_path = Path(target_directory)
@@ -2277,7 +2644,11 @@ def test_export_offline_bundle_supports_custom_target_list(
 
     class _ExportManager:
         def __init__(
-            self, config_name: str, code_path: str, target_directory: str = ""
+            self,
+            config_name: str,
+            code_path: str,
+            target_directory: str = "",
+            **_: object,
         ) -> None:
             del config_name, code_path
             self.target_path = Path(target_directory)
@@ -3470,3 +3841,151 @@ def test_module_main_guard_executes_main(monkeypatch: pytest.MonkeyPatch) -> Non
         runpy.run_module("uvscem.extension_manager", run_name="__main__")
 
     assert exc.value.code == 0
+
+
+def test_resolve_cli_extensions_dir_parses_and_handles_missing_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_wrapper = tmp_path / "missing-wrapper"
+    assert extension_manager._resolve_cli_extensions_dir(str(missing_wrapper)) is None
+
+    wrapper_without_flag = tmp_path / "wrapper-no-flag"
+    wrapper_without_flag.write_text(
+        '#!/usr/bin/env sh\nexec /usr/bin/code "$@"\n',
+        encoding="utf-8",
+    )
+    assert (
+        extension_manager._resolve_cli_extensions_dir(str(wrapper_without_flag)) is None
+    )
+
+    wrapper_with_flag = tmp_path / "wrapper-with-flag"
+    expected_extensions_dir = tmp_path / "isolated" / "extensions"
+    wrapper_with_flag.write_text(
+        "#!/usr/bin/env sh\n"
+        f"exec /usr/bin/code --extensions-dir '{expected_extensions_dir}' --user-data-dir '/tmp/user' \"$@\"\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        extension_manager._resolve_cli_extensions_dir(str(wrapper_with_flag))
+        == expected_extensions_dir.resolve()
+    )
+
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self, encoding="utf-8": (_ for _ in ()).throw(
+            UnicodeDecodeError("utf-8", b"x", 0, 1, "bad")
+        ),
+    )
+    assert extension_manager._resolve_cli_extensions_dir(str(wrapper_with_flag)) is None
+
+
+def test_install_extension_fallback_mirrors_to_wrapper_extensions_dir(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "extension_pack": []}
+    }
+    vsix_path = bare_manager.target_path / "pub.ext-1.0.0.vsix"
+    with zipfile.ZipFile(vsix_path, "w") as archive:
+        archive.writestr("extension/package.json", "{}")
+
+    extensions_dir = tmp_path / "wrapper-extensions"
+    wrapper = tmp_path / "code-isolated"
+    wrapper.write_text(
+        "#!/usr/bin/env sh\n"
+        f"exec /usr/bin/code --extensions-dir '{extensions_dir}' --user-data-dir '/tmp/user' \"$@\"\n",
+        encoding="utf-8",
+    )
+    bare_manager.code_binary = str(wrapper)
+
+    async def _find_socket(update_environment: bool = False) -> None:
+        return None
+
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(find_socket=_find_socket),
+    )
+
+    manual_calls: list[tuple[str, bool]] = []
+
+    async def _manual(
+        extension_id: str,
+        extension_path: Path,
+        update_json: bool = True,
+    ) -> None:
+        del extension_path
+        manual_calls.append((extension_id, update_json))
+
+    monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, ["code"], "", "")
+        ),
+    )
+
+    asyncio.run(
+        bare_manager.install_extension(
+            "pub.ext",
+            retries=extension_manager.max_retries,
+        )
+    )
+
+    assert manual_calls == [("pub.ext", True)]
+    assert (extensions_dir / "pub.ext-1.0.0").is_dir()
+
+
+def test_install_extension_fallback_without_wrapper_extensions_dir(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "extension_pack": []}
+    }
+    vsix_path = bare_manager.target_path / "pub.ext-1.0.0.vsix"
+    with zipfile.ZipFile(vsix_path, "w") as archive:
+        archive.writestr("extension/package.json", "{}")
+
+    bare_manager.code_binary = "code"
+
+    async def _find_socket(update_environment: bool = False) -> None:
+        return None
+
+    bare_manager.socket_manager = cast(
+        Any,
+        SimpleNamespace(find_socket=_find_socket),
+    )
+
+    manual_calls: list[tuple[str, bool]] = []
+
+    async def _manual(
+        extension_id: str,
+        extension_path: Path,
+        update_json: bool = True,
+    ) -> None:
+        del extension_path
+        manual_calls.append((extension_id, update_json))
+
+    monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
+    monkeypatch.setattr(
+        extension_manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, ["code"], "", "")
+        ),
+    )
+
+    asyncio.run(
+        bare_manager.install_extension(
+            "pub.ext",
+            retries=extension_manager.max_retries,
+        )
+    )
+
+    assert manual_calls == [("pub.ext", True)]

@@ -48,8 +48,8 @@ def stream_download_to_target(
             for chunk in response.iter_content(chunk_size=1024 * 8):
                 if chunk:
                     output.write(chunk)
-                    output.flush()
-                    os.fsync(output.fileno())
+            output.flush()
+            os.fsync(output.fileno())
 
         shutil.move(file_path, target_path)
         return target_path

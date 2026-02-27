@@ -17,7 +17,8 @@ class _ManagerStub:
         target_directory: str = "",
         allow_unsigned: bool = False,
         allow_untrusted_urls: bool = False,
-        disable_ssl: bool = False,
+        allow_http: bool = False,
+        disable_ssl_verification: bool = False,
         ca_bundle: str = "",
     ) -> None:
         self.config_name = config_name
@@ -25,7 +26,8 @@ class _ManagerStub:
         self.target_directory = target_directory
         self.allow_unsigned = allow_unsigned
         self.allow_untrusted_urls = allow_untrusted_urls
-        self.disable_ssl = disable_ssl
+        self.allow_http = allow_http
+        self.disable_ssl_verification = disable_ssl_verification
         self.ca_bundle = ca_bundle
         self.install_called = False
         self.initialized = False
@@ -119,7 +121,7 @@ def test_cli_help_shows_core_options(
     assert "--target-path" in help_text
     assert "--log-level" in help_text
     assert "--allow-untrusted-urls" in help_text
-    assert "--disable-ssl" in help_text
+    assert "--disable-ssl-verification" in help_text
     assert "INSECURE" in help_text
 
 
@@ -140,7 +142,8 @@ def test_cli_invokes_manager_with_expected_arguments(
         target_directory: str = "",
         allow_unsigned: bool = False,
         allow_untrusted_urls: bool = False,
-        disable_ssl: bool = False,
+        allow_http: bool = False,
+        disable_ssl_verification: bool = False,
         ca_bundle: str = "",
     ) -> _ManagerStub:
         manager = _ManagerStub(
@@ -149,7 +152,8 @@ def test_cli_invokes_manager_with_expected_arguments(
             target_directory=target_directory,
             allow_unsigned=allow_unsigned,
             allow_untrusted_urls=allow_untrusted_urls,
-            disable_ssl=disable_ssl,
+            allow_http=allow_http,
+            disable_ssl_verification=disable_ssl_verification,
             ca_bundle=ca_bundle,
         )
         captured["manager"] = manager

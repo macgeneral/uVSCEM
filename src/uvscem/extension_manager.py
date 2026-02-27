@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -108,7 +109,8 @@ def _as_installed_entry(value: object) -> InstalledEntry:
 class _SupportsNetworkOptions(Protocol):
     allow_unsigned: bool
     allow_untrusted_urls: bool
-    disable_ssl: bool
+    allow_http: bool
+    disable_ssl_verification: bool
     ca_bundle: str
 
 
@@ -129,10 +131,13 @@ def _validate_download_url(
     *,
     purpose: str,
     allow_untrusted_urls: bool = False,
+    allow_http: bool = False,
 ) -> str:
     parsed = urlparse(url)
-    if parsed.scheme.lower() != "https":
-        raise ValueError(f"{purpose} URL must use https: {url}")
+    scheme = parsed.scheme.lower()
+    if scheme != "https":
+        if not (allow_http and scheme == "http"):
+            raise ValueError(f"{purpose} URL must use https: {url}")
     host = parsed.hostname or ""
     if not allow_untrusted_urls and not _is_trusted_download_host(host):
         raise ValueError(f"{purpose} URL host is not trusted: {host or url}")
@@ -142,13 +147,19 @@ def _validate_download_url(
 def _configure_http_session(
     session: requests.Session | SimpleNamespace,
     *,
-    disable_ssl: bool,
+    disable_ssl_verification: bool,
     ca_bundle: str,
 ) -> None:
-    if disable_ssl:
+    if disable_ssl_verification:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         session.verify = False
         return
     if ca_bundle:
+        ca_path = Path(ca_bundle)
+        if not ca_path.is_file():
+            raise ValueError(f"CA bundle path is not a readable file: {ca_bundle}")
         session.verify = ca_bundle
 
 
@@ -157,12 +168,14 @@ def _apply_network_options(
     *,
     allow_unsigned: bool,
     allow_untrusted_urls: bool,
-    disable_ssl: bool,
+    allow_http: bool,
+    disable_ssl_verification: bool,
     ca_bundle: str,
 ) -> None:
     setattr(manager, "allow_unsigned", allow_unsigned)
     setattr(manager, "allow_untrusted_urls", allow_untrusted_urls)
-    setattr(manager, "disable_ssl", disable_ssl)
+    setattr(manager, "allow_http", allow_http)
+    setattr(manager, "disable_ssl_verification", disable_ssl_verification)
     setattr(manager, "ca_bundle", ca_bundle)
 
     api_manager = getattr(manager, "api_manager", None)
@@ -170,7 +183,7 @@ def _apply_network_options(
     if session is not None:
         _configure_http_session(
             session,
-            disable_ssl=disable_ssl,
+            disable_ssl_verification=disable_ssl_verification,
             ca_bundle=ca_bundle,
         )
 
@@ -189,6 +202,38 @@ def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
+def _extract_vsix_to_extension_dir(extension_path: Path, destination: Path) -> None:
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="vscode-extension-extract.") as tmp_dir:
+        with zipfile.ZipFile(extension_path, "r") as zip_obj:
+            _safe_extract_zip(zip_obj, Path(tmp_dir))
+            shutil.move(Path(tmp_dir, "extension/"), destination)
+
+
+def _resolve_cli_extensions_dir(code_binary: str) -> Path | None:
+    code_path = Path(code_binary)
+    if not code_path.is_file():
+        return None
+
+    try:
+        script = code_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    match = re.search(
+        r"--extensions-dir\s+(?:'([^']+)'|\"([^\"]+)\"|(\S+))",
+        script,
+    )
+    if match is None:
+        return None
+
+    extensions_dir = next(group for group in match.groups() if group is not None)
+    return Path(extensions_dir).expanduser().resolve()
+
+
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -200,9 +245,13 @@ def _write_json_atomic(path: Path, payload: object) -> None:
         delete=False,
     ) as tmp_file:
         tmp_path = Path(tmp_file.name)
-        json.dump(payload, tmp_file)
-        tmp_file.flush()
-        os.fsync(tmp_file.fileno())
+        try:
+            json.dump(payload, tmp_file)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
     tmp_path.replace(path)
 
 
@@ -221,7 +270,8 @@ class CodeExtensionManager(object):
     vsce_sign_binary: Path | None
     allow_unsigned: bool
     allow_untrusted_urls: bool
-    disable_ssl: bool
+    allow_http: bool
+    disable_ssl_verification: bool
     ca_bundle: str
 
     def __init__(
@@ -231,7 +281,8 @@ class CodeExtensionManager(object):
         target_directory: str = "",
         allow_unsigned: bool = False,
         allow_untrusted_urls: bool = False,
-        disable_ssl: bool = False,
+        allow_http: bool = False,
+        disable_ssl_verification: bool = False,
         ca_bundle: str = "",
     ) -> None:
         """Set up the CodeExtensionManager."""
@@ -262,7 +313,8 @@ class CodeExtensionManager(object):
             self,
             allow_unsigned=allow_unsigned,
             allow_untrusted_urls=allow_untrusted_urls,
-            disable_ssl=disable_ssl,
+            allow_http=allow_http,
+            disable_ssl_verification=disable_ssl_verification,
             ca_bundle=ca_bundle,
         )
         # create target directory if necessary
@@ -408,6 +460,7 @@ class CodeExtensionManager(object):
             str(metadata.get("url", "")),
             purpose=f"Extension download for {extension_id}",
             allow_untrusted_urls=self.allow_untrusted_urls,
+            allow_http=self.allow_http,
         )
         if not url:
             raise ValueError(f"Missing download URL for extension: {extension_id}")
@@ -442,6 +495,7 @@ class CodeExtensionManager(object):
             str(metadata.get("signature", "")),
             purpose=f"Signature download for {extension_id}",
             allow_untrusted_urls=self.allow_untrusted_urls,
+            allow_http=self.allow_http,
         )
         if not url:
             raise ValueError(f"Missing signature URL for extension: {extension_id}")
@@ -500,15 +554,7 @@ class CodeExtensionManager(object):
         )
 
         def _install_manual_sync() -> None:
-            if target_path.exists():
-                shutil.rmtree(target_path)
-
-            with tempfile.TemporaryDirectory(
-                prefix="vscode-extension-extract."
-            ) as tmp_dir:
-                with zipfile.ZipFile(extension_path, "r") as zip_obj:
-                    _safe_extract_zip(zip_obj, Path(tmp_dir))
-                    shutil.move(Path(tmp_dir, "extension/"), target_path)
+            _extract_vsix_to_extension_dir(extension_path, target_path)
 
         await asyncio.to_thread(_install_manual_sync)
 
@@ -583,7 +629,8 @@ class CodeExtensionManager(object):
         else:
             if not self.allow_unsigned:
                 raise ValueError(
-                    f"Missing signature metadata for extension {extension_id}"
+                    f"Missing signature metadata for extension {extension_id}; "
+                    f"use --allow-unsigned to install anyway (INSECURE)"
                 )
             logger.warning(
                 f"Missing signature metadata for extension {extension_id}, installing because --allow-unsigned is enabled"
@@ -628,15 +675,56 @@ class CodeExtensionManager(object):
                     logger.error(f"Something went wrong: {exc}")
                     await self.socket_manager.find_socket(update_environment=True)
                     if attempt >= max_retries:
-                        raise
+                        logger.warning(
+                            f"Code CLI installation failed for {extension_id}; falling back to manual VSIX extraction"
+                        )
+                        try:
+                            await self.install_extension_manually(
+                                extension_id,
+                                file_path,
+                                update_json=True,
+                            )
+
+                            cli_extensions_dir = _resolve_cli_extensions_dir(
+                                self.code_binary
+                            )
+                            if cli_extensions_dir is not None:
+                                cli_target = cli_extensions_dir.joinpath(
+                                    self.get_dirname(extension_id)
+                                )
+                                await asyncio.to_thread(
+                                    _extract_vsix_to_extension_dir,
+                                    file_path,
+                                    cli_target,
+                                )
+                            return
+                        except (OSError, ValueError, zipfile.BadZipFile):
+                            raise exc
                     attempt += 1
+
+            expected_extension_dir = vscode_root.joinpath(
+                f"extensions/{self.get_dirname(extension_id)}"
+            )
+            if not expected_extension_dir.is_dir():
+                if zipfile.is_zipfile(file_path):
+                    await self.install_extension_manually(
+                        extension_id,
+                        file_path,
+                        update_json=True,
+                    )
+                else:
+                    logger.warning(
+                        f"Installed VSIX for {extension_id} is not a zip archive, skipping managed extraction"
+                    )
 
     async def find_installed(self) -> list[InstalledEntry]:
         """Return a list of already installed extensions."""
 
         def _find_sync() -> list[InstalledEntry]:
             extensions_path: Path = self.extensions_json_path()
-            with open(extensions_path, "r") as f:
+            if not extensions_path.is_file():
+                return []
+            with open(extensions_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 if not isinstance(loaded, list):
                     return []
@@ -702,7 +790,8 @@ def install(
     log_level: str = "info",
     allow_unsigned: bool = False,
     allow_untrusted_urls: bool = False,
-    disable_ssl: bool = False,
+    allow_http: bool = False,
+    disable_ssl_verification: bool = False,
     ca_bundle: str = "",
 ) -> None:
     """Install all extensions listed in devcontainer.json."""
@@ -728,12 +817,10 @@ def install(
             config_name=config_name,
             code_path=code_path,
             target_directory=target_path,
-        )
-        _apply_network_options(
-            manager,
             allow_unsigned=allow_unsigned,
             allow_untrusted_urls=allow_untrusted_urls,
-            disable_ssl=disable_ssl,
+            allow_http=allow_http,
+            disable_ssl_verification=disable_ssl_verification,
             ca_bundle=ca_bundle,
         )
         await manager.initialize()
@@ -816,7 +903,8 @@ def export_offline_bundle(
     vsce_sign_targets: str = "current",
     manifest_signing_key: str = "",
     allow_untrusted_urls: bool = False,
-    disable_ssl: bool = False,
+    allow_http: bool = False,
+    disable_ssl_verification: bool = False,
     ca_bundle: str = "",
 ) -> None:
     """Export extensions, signatures, and vsce-sign into an offline bundle."""
@@ -866,12 +954,10 @@ def export_offline_bundle(
                 config_name=config_name,
                 code_path=code_path,
                 target_directory=str(cache_dir),
-            )
-            _apply_network_options(
-                manager,
                 allow_unsigned=False,
                 allow_untrusted_urls=allow_untrusted_urls,
-                disable_ssl=disable_ssl,
+                allow_http=allow_http,
+                disable_ssl_verification=disable_ssl_verification,
                 ca_bundle=ca_bundle,
             )
             extensions = await manager.parse_all_extensions()
@@ -1145,7 +1231,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow download hosts outside the trusted marketplace allowlist (INSECURE).",
     )
     parser.add_argument(
-        "--disable-ssl",
+        "--allow-http",
+        action="store_true",
+        help="Allow http:// URLs in addition to https:// (INSECURE). Useful for SSL-breaking proxies.",
+    )
+    parser.add_argument(
+        "--disable-ssl-verification",
         action="store_true",
         help="Disable TLS certificate verification for HTTP requests (INSECURE).",
     )
@@ -1154,7 +1245,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Path to custom CA bundle for TLS verification (overrides default trust store).",
     )
-    parser.add_argument("--verify-manifest-signature", action="store_true")
     parser.add_argument("--skip-manifest-signature-verification", action="store_true")
     parser.add_argument("--manifest-verification-keyring", default="")
     parser.add_argument("--log-level", default="info")
@@ -1175,11 +1265,17 @@ def main() -> None:
                 log_level=args.log_level,
                 allow_unsigned=getattr(args, "allow_unsigned", False),
                 allow_untrusted_urls=getattr(args, "allow_untrusted_urls", False),
-                disable_ssl=getattr(args, "disable_ssl", False),
+                allow_http=getattr(args, "allow_http", False),
+                disable_ssl_verification=getattr(
+                    args, "disable_ssl_verification", False
+                ),
                 ca_bundle=getattr(args, "ca_bundle", ""),
             )
         except InstallationWorkflowError as exc:
             logger.error(exc)
+            sys.exit(1)
+        except Exception as exc:
+            logger.error(f"Unexpected error: {exc}")
             sys.exit(1)
         return
 
@@ -1195,11 +1291,17 @@ def main() -> None:
                 vsce_sign_targets=getattr(args, "vsce_sign_targets", "current"),
                 manifest_signing_key=getattr(args, "manifest_signing_key", ""),
                 allow_untrusted_urls=getattr(args, "allow_untrusted_urls", False),
-                disable_ssl=getattr(args, "disable_ssl", False),
+                allow_http=getattr(args, "allow_http", False),
+                disable_ssl_verification=getattr(
+                    args, "disable_ssl_verification", False
+                ),
                 ca_bundle=getattr(args, "ca_bundle", ""),
             )
         except UvscemError as exc:
             logger.error(exc)
+            sys.exit(1)
+        except Exception as exc:
+            logger.error(f"Unexpected error: {exc}")
             sys.exit(1)
         return
 
@@ -1207,8 +1309,6 @@ def main() -> None:
         verify_manifest_signature = not getattr(
             args, "skip_manifest_signature_verification", False
         )
-        if getattr(args, "verify_manifest_signature", False):
-            verify_manifest_signature = True
 
         import_offline_bundle(
             bundle_path=args.bundle_path,
@@ -1223,6 +1323,9 @@ def main() -> None:
         )
     except UvscemError as exc:
         logger.error(exc)
+        sys.exit(1)
+    except Exception as exc:
+        logger.error(f"Unexpected error: {exc}")
         sys.exit(1)
 
 

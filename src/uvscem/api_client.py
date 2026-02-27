@@ -11,13 +11,11 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 from uvscem.internal_config import (
-    DEFAULT_USER_AGENT,
     HTTP_REQUEST_TIMEOUT_SECONDS,
     HTTP_RETRY_ALLOWED_METHODS,
     HTTP_RETRY_BACKOFF_FACTOR,
     HTTP_RETRY_STATUS_FORCELIST,
     HTTP_RETRY_TOTAL,
-    MAX_INSTALL_RETRIES,
 )
 from uvscem.marketplace import (
     build_extension_query_body,
@@ -28,10 +26,6 @@ from uvscem.vscode_paths import resolve_vscode_root
 
 __author__ = "Arne Fahrenwalde <arne@fahrenwal.de>"
 
-
-# attempt to install an extension a maximum of three times
-max_retries = MAX_INSTALL_RETRIES
-user_agent: str = DEFAULT_USER_AGENT
 # VSCode extension installation directory
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)

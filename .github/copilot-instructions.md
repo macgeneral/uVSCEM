@@ -1,6 +1,6 @@
 # uVSCEM Copilot Instructions
 
-This repository is Python 3.10+ and sync-first. Optimize for small, composable modules with explicit boundaries.
+This repository is Python 3.10+. Optimize for small, composable modules with explicit boundaries.
 
 ## Core engineering principles
 
@@ -25,7 +25,8 @@ This repository is Python 3.10+ and sync-first. Optimize for small, composable m
 
 ## Runtime model and behavior
 
-- Keep sync I/O model unless explicitly requested otherwise.
+- Use `asyncio` for all IO-bound operations (HTTP, subprocess, filesystem); wrap sync helpers with `asyncio.to_thread` where needed.
+- Do not use async for CPU-bound or purely in-memory logic.
 - Preserve proxy-aware download behavior.
 - Preserve dependency + extension-pack resolution semantics.
 - Keep compatibility with `devcontainer.json` extension lists (`customizations.vscode.extensions`).

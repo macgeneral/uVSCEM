@@ -14,8 +14,8 @@ Apply these rules when creating or modifying uVSCEM code.
 
 ## Fit the current runtime model
 
-- This project is sync-first today (`requests`, `argparse`, filesystem operations).
-- Do not introduce async/event-loop abstractions unless explicitly required.
+- The project uses `asyncio` for all IO-bound work (HTTP requests, subprocess calls, filesystem operations); sync helpers are wrapped with `asyncio.to_thread` where needed.
+- Do not introduce async for CPU-bound or purely in-memory logic.
 - Preserve existing runtime assumptions for DevContainer/postAttach usage.
 
 ## Design principles
