@@ -13,7 +13,9 @@ import tempfile
 import zipfile
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 
 # for parsing devcontainer.json (if it includes comments etc.)
 import json5
@@ -70,9 +72,90 @@ user_agent: str = DEFAULT_USER_AGENT
 vscode_root: Path = resolve_vscode_root()
 logger: logging.Logger = logging.getLogger(__name__)
 
+TRUSTED_DOWNLOAD_HOSTS: tuple[str, ...] = (
+    "marketplace.visualstudio.com",
+    "gallery.vsassets.io",
+    "gallerycdn.vsassets.io",
+    "visualstudio.com",
+    "vsassets.io",
+)
+
 
 def _workflow_error_message(operation: str, exc: Exception) -> str:
     return f"{operation} failed: {exc}"
+
+
+def _is_trusted_download_host(host: str) -> bool:
+    normalized_host = host.lower()
+    for trusted in TRUSTED_DOWNLOAD_HOSTS:
+        if normalized_host == trusted or normalized_host.endswith(f".{trusted}"):
+            return True
+    return False
+
+
+def _validate_download_url(
+    url: str,
+    *,
+    purpose: str,
+    allow_untrusted_urls: bool = False,
+) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https":
+        raise ValueError(f"{purpose} URL must use https: {url}")
+    host = parsed.hostname or ""
+    if not allow_untrusted_urls and not _is_trusted_download_host(host):
+        raise ValueError(f"{purpose} URL host is not trusted: {host or url}")
+    return url
+
+
+def _configure_http_session(
+    session: requests.Session | SimpleNamespace,
+    *,
+    disable_ssl: bool,
+    ca_bundle: str,
+) -> None:
+    if disable_ssl:
+        session.verify = False
+        return
+    if ca_bundle:
+        session.verify = ca_bundle
+
+
+def _apply_network_options(
+    manager: Any,
+    *,
+    allow_unsigned: bool,
+    allow_untrusted_urls: bool,
+    disable_ssl: bool,
+    ca_bundle: str,
+) -> None:
+    setattr(manager, "allow_unsigned", allow_unsigned)
+    setattr(manager, "allow_untrusted_urls", allow_untrusted_urls)
+    setattr(manager, "disable_ssl", disable_ssl)
+    setattr(manager, "ca_bundle", ca_bundle)
+
+    api_manager = getattr(manager, "api_manager", None)
+    session = getattr(api_manager, "session", None)
+    if session is not None:
+        _configure_http_session(
+            session,
+            disable_ssl=disable_ssl,
+            ca_bundle=ca_bundle,
+        )
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    destination_resolved = destination.resolve()
+    for member in archive.infolist():
+        member_path = destination.joinpath(member.filename)
+        try:
+            member_resolved = member_path.resolve()
+            member_resolved.relative_to(destination_resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unsafe archive member path outside extraction root: {member.filename}"
+            ) from exc
+    archive.extractall(destination)
 
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
@@ -105,12 +188,20 @@ class CodeExtensionManager(object):
     extension_metadata: dict[str, dict[str, Any]]
     target_path: Path
     vsce_sign_binary: Path | None
+    allow_unsigned: bool
+    allow_untrusted_urls: bool
+    disable_ssl: bool
+    ca_bundle: str
 
     def __init__(
         self,
         config_name: str = "devcontainer.json",
         code_path: str = "code",
         target_directory: str = "",
+        allow_unsigned: bool = False,
+        allow_untrusted_urls: bool = False,
+        disable_ssl: bool = False,
+        ca_bundle: str = "",
     ) -> None:
         """Set up the CodeExtensionManager."""
         self.extension_dependencies = defaultdict(set)
@@ -136,6 +227,13 @@ class CodeExtensionManager(object):
             else Path.home().joinpath("cache/.vscode/extensions").absolute()
         )
         self.vsce_sign_binary = None
+        _apply_network_options(
+            self,
+            allow_unsigned=allow_unsigned,
+            allow_untrusted_urls=allow_untrusted_urls,
+            disable_ssl=disable_ssl,
+            ca_bundle=ca_bundle,
+        )
         # create target directory if necessary
         self.target_path.mkdir(parents=True, exist_ok=True)
 
@@ -266,7 +364,11 @@ class CodeExtensionManager(object):
     async def download_extension(self, extension_id: str) -> Path:
         """Download an extension and return the downloaded file's path."""
         metadata: dict = self.extension_metadata.get(extension_id, {})
-        url: str = str(metadata.get("url", ""))
+        url = _validate_download_url(
+            str(metadata.get("url", "")),
+            purpose=f"Extension download for {extension_id}",
+            allow_untrusted_urls=self.allow_untrusted_urls,
+        )
         if not url:
             raise ValueError(f"Missing download URL for extension: {extension_id}")
         headers: dict = {
@@ -296,7 +398,11 @@ class CodeExtensionManager(object):
     async def download_signature_archive(self, extension_id: str) -> Path:
         """Download an extension signature archive and return the downloaded file path."""
         metadata: dict = self.extension_metadata.get(extension_id, {})
-        url: str = str(metadata.get("signature", ""))
+        url = _validate_download_url(
+            str(metadata.get("signature", "")),
+            purpose=f"Signature download for {extension_id}",
+            allow_untrusted_urls=self.allow_untrusted_urls,
+        )
         if not url:
             raise ValueError(f"Missing signature URL for extension: {extension_id}")
         headers: dict = {
@@ -361,7 +467,7 @@ class CodeExtensionManager(object):
                 prefix="vscode-extension-extract."
             ) as tmp_dir:
                 with zipfile.ZipFile(extension_path, "r") as zip_obj:
-                    zip_obj.extractall(tmp_dir)
+                    _safe_extract_zip(zip_obj, Path(tmp_dir))
                     shutil.move(Path(tmp_dir, "extension/"), target_path)
 
         await asyncio.to_thread(_install_manual_sync)
@@ -435,8 +541,12 @@ class CodeExtensionManager(object):
                 signature_file = await self.download_signature_archive(extension_id)
             await self.verify_extension_signature(file_path, signature_file)
         else:
+            if not self.allow_unsigned:
+                raise ValueError(
+                    f"Missing signature metadata for extension {extension_id}"
+                )
             logger.warning(
-                f"Missing signature metadata for extension {extension_id}, skipping verification"
+                f"Missing signature metadata for extension {extension_id}, installing because --allow-unsigned is enabled"
             )
 
         # installing extension packs doesn't work because the code install routine tries fetching other packages itself
@@ -464,22 +574,22 @@ class CodeExtensionManager(object):
                 extension_id, file_path, update_json=False
             )
         else:
-            try:
-                await asyncio.to_thread(
-                    run_code_cli_install,
-                    code_binary=self.code_binary,
-                    extension_path=file_path,
-                    run_command=subprocess.run,
-                )
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Something went wrong: {e}")
-                await self.socket_manager.find_socket(update_environment=True)
-                if retries < max_retries:
-                    await self.install_extension(
-                        extension_id,
-                        extension_pack=extension_pack,
-                        retries=retries + 1,
+            attempt = retries
+            while True:
+                try:
+                    await asyncio.to_thread(
+                        run_code_cli_install,
+                        code_binary=self.code_binary,
+                        extension_path=file_path,
+                        run_command=subprocess.run,
                     )
+                    break
+                except subprocess.CalledProcessError as exc:
+                    logger.error(f"Something went wrong: {exc}")
+                    await self.socket_manager.find_socket(update_environment=True)
+                    if attempt >= max_retries:
+                        raise
+                    attempt += 1
 
     async def find_installed(self) -> list[dict[str, Any]]:
         """Return a list of already installed extensions."""
@@ -496,30 +606,38 @@ class CodeExtensionManager(object):
 
     async def exclude_installed(self) -> None:
         """Remove all already installed extensions from the extensions list."""
+        installed_pairs: set[tuple[str, str]] = set()
         for installed_extension in self.installed:
-            for extension in self.extensions:
-                installed_version: str = str(installed_extension.get("version", ""))
-                installed_name: str = str(
-                    installed_extension.get("identifier", {}).get("id", "")
-                ).lower()
-                extension_name: str = extension.lower()
-                extension_version: str = str(
-                    self.extension_metadata.get(extension, {}).get("version", "")
+            installed_name = str(
+                installed_extension.get("identifier", {}).get("id", "")
+            ).lower()
+            installed_version = str(installed_extension.get("version", ""))
+            if installed_name and installed_version:
+                installed_pairs.add((installed_name, installed_version))
+
+        filtered_extensions: list[str] = []
+        for extension in self.extensions:
+            extension_name = extension.lower()
+            extension_version = str(
+                self.extension_metadata.get(extension, {}).get("version", "")
+            )
+            if (extension_name, extension_version) in installed_pairs:
+                logger.info(
+                    f"Skipping {extension} ({extension_version}), already installed."
                 )
-                if (
-                    extension_name == installed_name
-                    and installed_version == extension_version
-                ):
-                    self.extensions.remove(extension)
-                    logger.info(
-                        f"Skipping {extension} ({extension_version}), already installed."
-                    )
+                continue
+            filtered_extensions.append(extension)
+
+        self.extensions = filtered_extensions
 
     async def install_async(self) -> None:
         """Asynchronously install all configured extensions."""
         await self.exclude_installed()
 
-        provisioner = provision_vsce_sign_binary_for_run(install_dir=self.target_path)
+        provisioner = provision_vsce_sign_binary_for_run(
+            install_dir=self.target_path,
+            session=self.api_manager.session,
+        )
         with provisioner as vsce_sign_binary:
             self.vsce_sign_binary = vsce_sign_binary
             try:
@@ -535,6 +653,10 @@ def install(
     code_path: str = "code",
     target_path: str = "",
     log_level: str = "info",
+    allow_unsigned: bool = False,
+    allow_untrusted_urls: bool = False,
+    disable_ssl: bool = False,
+    ca_bundle: str = "",
 ) -> None:
     """Install all extensions listed in devcontainer.json."""
     logging.basicConfig(
@@ -559,6 +681,13 @@ def install(
             config_name=config_name,
             code_path=code_path,
             target_directory=target_path,
+        )
+        _apply_network_options(
+            manager,
+            allow_unsigned=allow_unsigned,
+            allow_untrusted_urls=allow_untrusted_urls,
+            disable_ssl=disable_ssl,
+            ca_bundle=ca_bundle,
         )
         await manager.initialize()
         await manager.install_async()
@@ -639,6 +768,9 @@ def export_offline_bundle(
     vsce_sign_version: str = DEFAULT_VSCE_SIGN_VERSION,
     vsce_sign_targets: str = "current",
     manifest_signing_key: str = "",
+    allow_untrusted_urls: bool = False,
+    disable_ssl: bool = False,
+    ca_bundle: str = "",
 ) -> None:
     """Export extensions, signatures, and vsce-sign into an offline bundle."""
     logging.basicConfig(
@@ -681,11 +813,19 @@ def export_offline_bundle(
             list[str],
             dict[str, dict[str, Any]],
             dict[str, tuple[Path, Path]],
+            Any,
         ]:
             manager = CodeExtensionManager(
                 config_name=config_name,
                 code_path=code_path,
                 target_directory=str(cache_dir),
+            )
+            _apply_network_options(
+                manager,
+                allow_unsigned=False,
+                allow_untrusted_urls=allow_untrusted_urls,
+                disable_ssl=disable_ssl,
+                ca_bundle=ca_bundle,
             )
             extensions = await manager.parse_all_extensions()
             downloaded: dict[str, tuple[Path, Path]] = {}
@@ -693,9 +833,16 @@ def export_offline_bundle(
                 vsix_path = await manager.download_extension(extension_id)
                 signature_path = await manager.download_signature_archive(extension_id)
                 downloaded[extension_id] = (vsix_path, signature_path)
-            return extensions, manager.extension_metadata, downloaded
+            return (
+                extensions,
+                manager.extension_metadata,
+                downloaded,
+                getattr(getattr(manager, "api_manager", None), "session", None),
+            )
 
-        extensions, extension_metadata, downloaded_artifacts = asyncio.run(_run())
+        extensions, extension_metadata, downloaded_artifacts, session_client = (
+            asyncio.run(_run())
+        )
 
         for extension_id in extensions:
             vsix_path, signature_path = downloaded_artifacts[extension_id]
@@ -710,6 +857,7 @@ def export_offline_bundle(
                 install_dir=target_dir,
                 version=vsce_sign_version,
                 force=True,
+                session=session_client,
             )
             vsce_sign_binaries.append(
                 {
@@ -761,7 +909,7 @@ def import_offline_bundle(
     target_path: str = "",
     log_level: str = "info",
     strict_offline: bool = False,
-    verify_manifest_signature: bool = False,
+    verify_manifest_signature: bool = True,
     manifest_verification_keyring: str = "",
 ) -> None:
     """Install extensions from a previously exported offline bundle."""
@@ -939,7 +1087,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vsce-sign-targets", default="current")
     parser.add_argument("--manifest-signing-key", default="")
     parser.add_argument("--strict-offline", action="store_true")
+    parser.add_argument(
+        "--allow-unsigned",
+        action="store_true",
+        help="Allow installation when signature metadata is missing (INSECURE).",
+    )
+    parser.add_argument(
+        "--allow-untrusted-urls",
+        action="store_true",
+        help="Allow download hosts outside the trusted marketplace allowlist (INSECURE).",
+    )
+    parser.add_argument(
+        "--disable-ssl",
+        action="store_true",
+        help="Disable TLS certificate verification for HTTP requests (INSECURE).",
+    )
+    parser.add_argument(
+        "--ca-bundle",
+        default="",
+        help="Path to custom CA bundle for TLS verification (overrides default trust store).",
+    )
     parser.add_argument("--verify-manifest-signature", action="store_true")
+    parser.add_argument("--skip-manifest-signature-verification", action="store_true")
     parser.add_argument("--manifest-verification-keyring", default="")
     parser.add_argument("--log-level", default="info")
     return parser
@@ -957,6 +1126,10 @@ def main() -> None:
                 code_path=args.code_path,
                 target_path=args.target_path,
                 log_level=args.log_level,
+                allow_unsigned=getattr(args, "allow_unsigned", False),
+                allow_untrusted_urls=getattr(args, "allow_untrusted_urls", False),
+                disable_ssl=getattr(args, "disable_ssl", False),
+                ca_bundle=getattr(args, "ca_bundle", ""),
             )
         except InstallationWorkflowError as exc:
             logger.error(exc)
@@ -974,6 +1147,9 @@ def main() -> None:
                 vsce_sign_version=args.vsce_sign_version,
                 vsce_sign_targets=getattr(args, "vsce_sign_targets", "current"),
                 manifest_signing_key=getattr(args, "manifest_signing_key", ""),
+                allow_untrusted_urls=getattr(args, "allow_untrusted_urls", False),
+                disable_ssl=getattr(args, "disable_ssl", False),
+                ca_bundle=getattr(args, "ca_bundle", ""),
             )
         except UvscemError as exc:
             logger.error(exc)
@@ -981,13 +1157,19 @@ def main() -> None:
         return
 
     try:
+        verify_manifest_signature = not getattr(
+            args, "skip_manifest_signature_verification", False
+        )
+        if getattr(args, "verify_manifest_signature", False):
+            verify_manifest_signature = True
+
         import_offline_bundle(
             bundle_path=args.bundle_path,
             code_path=args.code_path,
             target_path=args.target_path,
             log_level=args.log_level,
             strict_offline=getattr(args, "strict_offline", False),
-            verify_manifest_signature=getattr(args, "verify_manifest_signature", False),
+            verify_manifest_signature=verify_manifest_signature,
             manifest_verification_keyring=getattr(
                 args, "manifest_verification_keyring", ""
             ),
