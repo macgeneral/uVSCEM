@@ -29,6 +29,8 @@ class _Response:
 
 
 class _Session:
+    verify: bool | str = True
+
     def __init__(self, responses: dict[str, _Response]) -> None:
         self.responses = responses
         self.calls: list[str] = []
@@ -263,6 +265,8 @@ def test_install_vsce_sign_binary_no_force_keeps_existing(
     monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
 
     class _NeverSession:
+        verify: bool | str = True
+
         def get(self, *_args, **_kwargs):
             raise AssertionError("network should not be used")
 
@@ -841,3 +845,29 @@ def test_module_main_guard_executes_main(monkeypatch: pytest.MonkeyPatch) -> Non
         runpy.run_module("uvscem.vsce_sign_bootstrap", run_name="__main__")
 
     assert exc.value.code == 0
+
+
+def test_install_vsce_sign_binary_for_target_uses_default_session_when_none_provided(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Covers the else: session_client = requests.Session() path."""
+    monkeypatch.setattr(vsce_sign_bootstrap.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(vsce_sign_bootstrap.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(vsce_sign_bootstrap, "_is_musl_linux", lambda: False)
+
+    binary_path = tmp_path / "vsce-sign"
+    binary_path.write_bytes(b"fake-binary")
+
+    # Binary present + verify_existing_checksum=False returns early without
+    # touching the network, but session_client = requests.Session() is still hit.
+    result = vsce_sign_bootstrap.install_vsce_sign_binary_for_target(
+        target="linux-x64",
+        install_dir=tmp_path,
+        version="2.0.6",
+        force=False,
+        session=None,
+        verify_existing_checksum=False,
+    )
+
+    assert result == binary_path

@@ -1,10 +1,44 @@
 from __future__ import annotations
 
-# The Marketplace CDN may reject requests with generic/tool user-agents;
-# a browser-like UA is required to obtain download URLs that resolve correctly.
+import platform
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+
+def _get_package_version(name: str) -> str:
+    """Return the installed version of *name*, or ``"0"`` if not found."""
+    try:
+        return _pkg_version(name)
+    except PackageNotFoundError:
+        return "0"
+
+
+def _get_uvscem_version() -> str:
+    """Return the uvscem version.
+
+    Prefers the ``uvscem._version`` module when present — the Nuitka build
+    step writes that file into the installed package before compilation so
+    the version string is a compile-time constant in the resulting binary.
+    Falls back to ``importlib.metadata`` for normal installs and editable
+    development environments.
+    """
+    import importlib
+
+    try:
+        mod = importlib.import_module("uvscem._version")
+        return str(mod.__version__)
+    except (ImportError, AttributeError):
+        return _get_package_version("uvscem")
+
+
+_uvscem_version = _get_uvscem_version()
+
+# Note: some Marketplace CDN endpoints may return non-functional download URLs when
+# presented with unfamiliar User-Agents. If downloads break, adjust this string.
 DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15"
+    f"uvscem/{_uvscem_version}"
+    f" ({platform.system()}; {platform.machine()};"
+    f" compatible; +https://github.com/macgeneral/uVSCEM)"
 )
 
 MAX_INSTALL_RETRIES = 3

@@ -30,10 +30,22 @@ logger: logging.Logger = logging.getLogger(__name__)
 JsonMap = dict[str, object]
 
 
-class CodeAPIManager(object):
+class CodeAPIManager:
     """Directly obtain all relevant information from the VSCode Marketplace API."""
 
     session: requests.Session
+
+    def __init__(self) -> None:
+        retry_strategy = Retry(
+            total=HTTP_RETRY_TOTAL,
+            backoff_factor=HTTP_RETRY_BACKOFF_FACTOR,
+            status_forcelist=HTTP_RETRY_STATUS_FORCELIST,
+            allowed_methods=HTTP_RETRY_ALLOWED_METHODS,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session = requests.Session()
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     def _get_vscode_extension_sync(
         self,
@@ -145,7 +157,10 @@ class CodeAPIManager(object):
         requested_version: str = "",
     ) -> dict[str, list[JsonMap]]:
         extensions: dict[str, list[JsonMap]] = {}
-        logger.info(f"Obtaining metadata for {extension_id}")
+        logger.info(
+            "Obtaining metadata for %s",
+            extension_id.replace("\n", "\\n").replace("\r", "\\r"),
+        )
         for extension in self._get_vscode_extension_sync(
             extension_id=extension_id,
             include_latest_version_only=include_latest_version_only,
@@ -220,15 +235,3 @@ class CodeAPIManager(object):
             include_latest_stable_version_only,
             requested_version,
         )
-
-    def __init__(self):
-        retry_strategy = Retry(
-            total=HTTP_RETRY_TOTAL,
-            backoff_factor=HTTP_RETRY_BACKOFF_FACTOR,
-            status_forcelist=HTTP_RETRY_STATUS_FORCELIST,
-            allowed_methods=HTTP_RETRY_ALLOWED_METHODS,
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session = requests.Session()
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)

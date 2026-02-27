@@ -335,3 +335,24 @@ def test_get_vscode_extension_handles_malformed_payloads(payload: object) -> Non
     )
 
     assert result == []
+
+
+def test_get_package_version_returns_zero_when_package_not_found() -> None:
+    from uvscem.internal_config import _get_package_version
+
+    assert _get_package_version("this-package-does-not-exist-xyz") == "0"
+
+
+def test_get_uvscem_version_prefers_version_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    from uvscem.internal_config import _get_uvscem_version
+
+    version_module = types.ModuleType("uvscem._version")
+    version_module.__version__ = "9.9.9"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "uvscem._version", version_module)
+
+    assert _get_uvscem_version() == "9.9.9"

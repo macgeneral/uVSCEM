@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import runpy
 import subprocess
@@ -48,6 +49,7 @@ def bare_manager(tmp_path: Path) -> CodeExtensionManager:
     manager.allow_http = False
     manager.disable_ssl_verification = False
     manager.ca_bundle = ""
+    manager._vscode_root = tmp_path / "vscode-root"
     return manager
 
 
@@ -503,7 +505,10 @@ def test_download_extension_reuses_cached_file(
         }
     }
     cached_path = bare_manager.target_path / bare_manager.get_filename("pub.ext")
-    cached_path.write_bytes(b"cached")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("placeholder.txt", "cached")
+    cached_path.write_bytes(buf.getvalue())
 
     bare_manager.api_manager = cast(
         Any,
@@ -519,7 +524,39 @@ def test_download_extension_reuses_cached_file(
     downloaded = asyncio.run(bare_manager.download_extension("pub.ext"))
 
     assert downloaded == cached_path
-    assert downloaded.read_bytes() == b"cached"
+    assert zipfile.is_zipfile(downloaded)
+
+
+def test_download_extension_re_downloads_when_cached_file_is_not_valid_zip(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "url": "https://marketplace.visualstudio.com/file.vsix",
+        }
+    }
+    cached_path = bare_manager.target_path / bare_manager.get_filename("pub.ext")
+    cached_path.write_bytes(b"not-a-zip")
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            yield b"fresh-download"
+
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+        ),
+    )
+
+    downloaded = asyncio.run(bare_manager.download_extension("pub.ext"))
+
+    assert downloaded == cached_path
+    assert downloaded.read_bytes() == b"fresh-download"
 
 
 def test_download_signature_archive_writes_and_moves_file(
@@ -610,7 +647,10 @@ def test_download_signature_archive_reuses_cached_file(
     cached_path = bare_manager.target_path / bare_manager.get_signature_filename(
         "pub.ext"
     )
-    cached_path.write_bytes(b"cached-signature")
+    sig_buf = io.BytesIO()
+    with zipfile.ZipFile(sig_buf, "w") as zf:
+        zf.writestr("placeholder.txt", "cached-signature")
+    cached_path.write_bytes(sig_buf.getvalue())
 
     bare_manager.api_manager = cast(
         Any,
@@ -626,7 +666,41 @@ def test_download_signature_archive_reuses_cached_file(
     downloaded = asyncio.run(bare_manager.download_signature_archive("pub.ext"))
 
     assert downloaded == cached_path
-    assert downloaded.read_bytes() == b"cached-signature"
+    assert zipfile.is_zipfile(downloaded)
+
+
+def test_download_signature_archive_re_downloads_when_cached_file_is_not_valid_zip(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "signature": "https://marketplace.visualstudio.com/file.sigzip",
+        }
+    }
+    cached_path = bare_manager.target_path / bare_manager.get_signature_filename(
+        "pub.ext"
+    )
+    cached_path.write_bytes(b"not-a-zip")
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            yield b"fresh-sig"
+
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+        ),
+    )
+
+    downloaded = asyncio.run(bare_manager.download_signature_archive("pub.ext"))
+
+    assert downloaded == cached_path
+    assert downloaded.read_bytes() == b"fresh-sig"
 
 
 def test_verify_extension_signature_runs_vsce_sign(
@@ -694,7 +768,7 @@ def test_install_extension_manually_extracts_and_updates_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "vscode-root"
-    monkeypatch.setattr(extension_manager, "vscode_root", root)
+    bare_manager._vscode_root = root
     bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
 
     vsix_path = tmp_path / "pub.ext-1.0.0.vsix"
@@ -725,7 +799,7 @@ def test_install_extension_manually_removes_existing_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "vscode-root"
-    monkeypatch.setattr(extension_manager, "vscode_root", root)
+    bare_manager._vscode_root = root
     bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
 
     existing_dir = root / "extensions" / "pub.ext-1.0.0"
@@ -749,7 +823,7 @@ def test_install_extension_manually_can_skip_json_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "vscode-root"
-    monkeypatch.setattr(extension_manager, "vscode_root", root)
+    bare_manager._vscode_root = root
     bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
 
     vsix_path = tmp_path / "pub.ext-1.0.0.vsix"
@@ -778,7 +852,7 @@ def test_install_extension_manually_rejects_unsafe_archive_member(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "vscode-root"
-    monkeypatch.setattr(extension_manager, "vscode_root", root)
+    bare_manager._vscode_root = root
     bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
 
     vsix_path = tmp_path / "pub.ext-1.0.0.vsix"
@@ -1150,7 +1224,7 @@ def test_install_extension_skips_manual_extraction_when_managed_dir_exists(
         del extension_path, update_json
         manual_calls.append(extension_id)
 
-    monkeypatch.setattr(extension_manager, "vscode_root", managed_root)
+    bare_manager._vscode_root = managed_root
     monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
     monkeypatch.setattr(
         extension_manager.subprocess,
@@ -1181,7 +1255,7 @@ def test_install_extension_warns_for_non_zip_when_managed_dir_missing(
     ) -> None:
         raise AssertionError("manual extraction should not run for non-zip VSIX")
 
-    monkeypatch.setattr(extension_manager, "vscode_root", tmp_path / "vscode-root")
+    bare_manager._vscode_root = tmp_path / "vscode-root"
     monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
     monkeypatch.setattr(
         extension_manager.logger, "warning", lambda msg: warnings.append(msg)
@@ -1217,7 +1291,7 @@ def test_install_extension_runs_manual_extraction_for_valid_zip_when_missing(
         del extension_path
         manual_calls.append((extension_id, update_json))
 
-    monkeypatch.setattr(extension_manager, "vscode_root", tmp_path / "vscode-root")
+    bare_manager._vscode_root = tmp_path / "vscode-root"
     monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
     monkeypatch.setattr(
         extension_manager.subprocess,
@@ -1449,7 +1523,7 @@ def test_extensions_json_path_uses_vscode_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "vscode-root"
-    monkeypatch.setattr(extension_manager, "vscode_root", root)
+    bare_manager._vscode_root = root
 
     assert (
         bare_manager.extensions_json_path() == root / "extensions" / "extensions.json"
@@ -3892,6 +3966,16 @@ def test_resolve_cli_extensions_dir_parses_and_handles_missing_cases(
         ),
     )
     assert extension_manager._resolve_cli_extensions_dir(str(wrapper_with_flag)) is None
+
+
+def test_resolve_cli_extensions_dir_rejects_system_paths(tmp_path: Path) -> None:
+    wrapper = tmp_path / "code-script"
+    wrapper.write_text(
+        "#!/usr/bin/env sh\n"
+        "exec /usr/bin/code --extensions-dir '/etc/vscode-extensions' \"$@\"\n",
+        encoding="utf-8",
+    )
+    assert extension_manager._resolve_cli_extensions_dir(str(wrapper)) is None
 
 
 def test_install_extension_fallback_mirrors_to_wrapper_extensions_dir(

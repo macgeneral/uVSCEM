@@ -60,7 +60,7 @@ def _parse_remote_cli_metadata(launcher_path: Path) -> tuple[str, str] | None:
     return version, commit
 
 
-class CodeManager(object):
+class CodeManager:
     """Find VSCode CLI command and socket required for using 'code' in postAttachCommand."""
 
     socket_path: Path | None = None

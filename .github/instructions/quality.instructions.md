@@ -27,6 +27,7 @@ Activate environment first:
 2. `uv run ruff check .`
 3. `uv run ty check`
 4. `uv run pytest src`
+5. `uv run pytest src --slow --no-cov`
 
 ## Completion criteria
 

@@ -40,6 +40,9 @@ class VsceSignBootstrapError(RuntimeError):
 
 
 class RegistrySession(Protocol):
+    # Controls TLS certificate verification; mirrors requests.Session.verify.
+    verify: bool | str
+
     def get(self, url: str, *, timeout: int) -> requests.Response: ...
 
 
@@ -215,9 +218,10 @@ def install_vsce_sign_binary_for_target(
     install_path = Path(install_dir).expanduser().resolve()
     binary_name = _binary_name_for_target(target)
     binary_path = install_path.joinpath(binary_name)
-    session_client: RegistrySession = (
-        session if session is not None else requests.Session()
-    )
+    if session is not None:
+        session_client: RegistrySession = session
+    else:
+        session_client = requests.Session()
 
     if binary_path.is_file() and not force:
         if not verify_existing_checksum:

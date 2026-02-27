@@ -88,6 +88,17 @@ jobs:
       - name: Install runtime dependencies
         run: pip install .
 
+      - name: Write version constant for Nuitka
+        shell: python
+        run: |
+          import importlib.metadata
+          import uvscem
+          from pathlib import Path
+          v = importlib.metadata.version("uvscem")
+          Path(uvscem.__file__).parent.joinpath("_version.py").write_text(
+              f'__version__ = "{v}"\n'
+          )
+
       - name: Build binary
         uses: Nuitka/Nuitka-Action@0d4e22d4b66062a13d120f6948dd90170be04b3a # v1.4
         with:

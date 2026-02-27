@@ -161,3 +161,6 @@ cython_debug/
 
 .devcontainer/cache/
 .tmp/
+
+# Generated at Nuitka build time — must not be committed
+src/uvscem/_version.py

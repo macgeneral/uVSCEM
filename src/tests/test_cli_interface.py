@@ -237,6 +237,18 @@ def test_export_missing_config_exits_cleanly(
     assert any("not found" in record.message.lower() for record in caplog.records)
 
 
+def test_version_flag_prints_version_and_user_agent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _run_main(monkeypatch, ["--version"])
+    output = capsys.readouterr()
+    text = f"{output.out}\n{output.err}"
+
+    assert code == 0
+    assert "uvscem" in text
+    assert "User-Agent:" in text
+
+
 def test_import_missing_bundle_exits_cleanly(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

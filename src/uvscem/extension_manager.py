@@ -40,6 +40,7 @@ from uvscem.internal_config import (
     HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
     HTTP_STREAM_READ_TIMEOUT_SECONDS,
     MAX_INSTALL_RETRIES,
+    _uvscem_version,
 )
 from uvscem.models import ExtensionSpec, ResolvedExtensionRequest
 from uvscem.vsce_sign_bootstrap import (
@@ -94,6 +95,11 @@ class _SupportsNetworkOptions(Protocol):
 
 def _workflow_error_message(operation: str, exc: Exception) -> str:
     return f"{operation} failed: {exc}"
+
+
+def _sanitize_log_str(value: str) -> str:
+    """Strip newline characters that could enable log-injection attacks."""
+    return value.replace("\n", "\\n").replace("\r", "\\r")
 
 
 def _is_trusted_download_host(host: str) -> bool:
@@ -192,6 +198,21 @@ def _extract_vsix_to_extension_dir(extension_path: Path, destination: Path) -> N
             shutil.move(Path(tmp_dir, "extension/"), destination)
 
 
+# Paths the resolved CLI extensions directory must not be rooted under.
+# Writing extension files into system directories could corrupt the OS.
+_UNTRUSTED_CLI_EXTENSION_DIR_PREFIXES: tuple[Path, ...] = (
+    Path("/bin"),
+    Path("/sbin"),
+    Path("/etc"),
+    Path("/usr/bin"),
+    Path("/usr/sbin"),
+    Path("/boot"),
+    Path("/sys"),
+    Path("/proc"),
+    Path("/dev"),
+)
+
+
 def _resolve_cli_extensions_dir(code_binary: str) -> Path | None:
     code_path = Path(code_binary)
     if not code_path.is_file():
@@ -210,7 +231,15 @@ def _resolve_cli_extensions_dir(code_binary: str) -> Path | None:
         return None
 
     extensions_dir = next(group for group in match.groups() if group is not None)
-    return Path(extensions_dir).expanduser().resolve()
+    result = Path(extensions_dir).expanduser().resolve()
+    for denied in _UNTRUSTED_CLI_EXTENSION_DIR_PREFIXES:
+        if result == denied or str(result).startswith(str(denied) + os.sep):
+            logger.warning(
+                "CLI extensions dir resolved to a system path, ignoring: %s",
+                result,
+            )
+            return None
+    return result
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:
@@ -234,7 +263,7 @@ def _write_json_atomic(path: Path, payload: object) -> None:
     tmp_path.replace(path)
 
 
-class CodeExtensionManager(object):
+class CodeExtensionManager:
     """Proxy aware helper script to install VSCode extensions in a DevContainer."""
 
     api_manager: CodeAPIManager
@@ -288,6 +317,7 @@ class CodeExtensionManager(object):
             else Path.home().joinpath("cache/.vscode/extensions").absolute()
         )
         self.vsce_sign_binary = None
+        self._vscode_root: Path = vscode_root
         _apply_network_options(
             self,
             allow_unsigned=allow_unsigned,
@@ -451,9 +481,19 @@ class CodeExtensionManager(object):
         def _download_sync() -> Path:
             target_path = self.target_path.joinpath(self.get_filename(extension_id))
             if target_path.is_file() and target_path.stat().st_size > 0:
-                logger.info(f"Reusing cached VSIX for {extension_id}: {target_path}")
-                return target_path
-            logger.info(f"Installing {extension_id} from {url}")
+                if zipfile.is_zipfile(target_path):
+                    logger.info(
+                        "Reusing cached VSIX for %s: %s",
+                        _sanitize_log_str(extension_id),
+                        target_path,
+                    )
+                    return target_path
+                logger.warning(
+                    "Cached VSIX for %s is not a valid zip, re-downloading: %s",
+                    _sanitize_log_str(extension_id),
+                    target_path,
+                )
+            logger.info("Installing %s from %s", _sanitize_log_str(extension_id), url)
             return stream_download_to_target(
                 session=self.api_manager.session,
                 url=url,
@@ -488,10 +528,18 @@ class CodeExtensionManager(object):
                 self.get_signature_filename(extension_id)
             )
             if target_path.is_file() and target_path.stat().st_size > 0:
-                logger.info(
-                    f"Reusing cached signature archive for {extension_id}: {target_path}"
+                if zipfile.is_zipfile(target_path):
+                    logger.info(
+                        "Reusing cached signature archive for %s: %s",
+                        _sanitize_log_str(extension_id),
+                        target_path,
+                    )
+                    return target_path
+                logger.warning(
+                    "Cached signature archive for %s is not a valid zip, re-downloading: %s",
+                    _sanitize_log_str(extension_id),
+                    target_path,
                 )
-                return target_path
             return stream_download_to_target(
                 session=self.api_manager.session,
                 url=url,
@@ -529,7 +577,7 @@ class CodeExtensionManager(object):
         # [x] unpack everything to ~/.vscode-server/extensions/extension.bundleid-version
         # [x] add installation_metadata to self.installed and export it to ~/.vscode-server/extensions/extensions.json
         # [x] repeat the steps for all extensions listed in extension_pack (check their dependencies!)
-        target_path = vscode_root.joinpath(
+        target_path = self._vscode_root.joinpath(
             f"extensions/{self.get_dirname(extension_id)}"
         )
 
@@ -685,7 +733,7 @@ class CodeExtensionManager(object):
                             raise exc from exc
                     attempt += 1
 
-            expected_extension_dir = vscode_root.joinpath(
+            expected_extension_dir = self._vscode_root.joinpath(
                 f"extensions/{self.get_dirname(extension_id)}"
             )
             if not expected_extension_dir.is_dir():
@@ -720,7 +768,7 @@ class CodeExtensionManager(object):
         return await asyncio.to_thread(_find_sync)
 
     def extensions_json_path(self) -> Path:
-        return vscode_root.joinpath("extensions/extensions.json")
+        return self._vscode_root.joinpath("extensions/extensions.json")
 
     async def exclude_installed(self) -> None:
         """Remove all already installed extensions from the extensions list."""
@@ -834,6 +882,11 @@ def build_parser() -> argparse.ArgumentParser:
     """Create CLI parser while keeping existing install option names."""
     parser = argparse.ArgumentParser(prog="uvscem")
     parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show version information and exit.",
+    )
+    parser.add_argument(
         "command",
         nargs="?",
         default="install",
@@ -881,6 +934,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if getattr(args, "version", False):
+        print(f"uvscem {_uvscem_version}")
+        print(f"User-Agent: {DEFAULT_USER_AGENT}")
+        return
+
     command = getattr(args, "command", "install")
 
     if command == "install":
@@ -903,6 +962,7 @@ def main() -> None:
             sys.exit(1)
         except Exception as exc:
             logger.error(f"Unexpected error: {exc}")
+            logger.debug("Traceback:", exc_info=True)
             sys.exit(1)
         return
 
@@ -929,6 +989,7 @@ def main() -> None:
             sys.exit(1)
         except Exception as exc:
             logger.error(f"Unexpected error: {exc}")
+            logger.debug("Traceback:", exc_info=True)
             sys.exit(1)
         return
 
@@ -953,6 +1014,7 @@ def main() -> None:
         sys.exit(1)
     except Exception as exc:
         logger.error(f"Unexpected error: {exc}")
+        logger.debug("Traceback:", exc_info=True)
         sys.exit(1)
 
 
