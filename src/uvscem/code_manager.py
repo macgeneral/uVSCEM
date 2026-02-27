@@ -90,10 +90,10 @@ class CodeManager:
 
         for socket_path in sockets:
             if self.is_socket_closed(socket_path):
-                logger.debug(f"Removing stale socket {socket_path}")
+                logger.debug("Removing stale socket %s", socket_path)
                 Path.unlink(socket_path)
             else:
-                logger.debug(f"Found active socket: {socket_path}")
+                logger.debug("Found active socket: %s", socket_path)
                 if no_socket:
                     self.socket_path = socket_path
                     no_socket = False
@@ -144,7 +144,7 @@ class CodeManager:
             self.code_path = Path(code_binary).resolve().parent
 
         if update_environment:
-            logger.debug(f"Adding Code [{self.code_path}] to $PATH")
+            logger.debug("Adding Code [%s] to $PATH", self.code_path)
             current_path = os.environ.get("PATH", "")
             vscode_path = f"{self.code_path}"
             if vscode_path in current_path:

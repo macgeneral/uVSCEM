@@ -43,6 +43,12 @@ DEFAULT_USER_AGENT = (
 
 MAX_INSTALL_RETRIES = 3
 
+# Hard caps on extension download sizes to guard against runaway CDN responses.
+# Some extensions (e.g. C/C++, Java) legitimately exceed 200 MB.
+_MAX_VSIX_DOWNLOAD_BYTES = 512 * 1024 * 1024  # 512 MB
+# Signature archives are small; 10 MB is a generous upper bound.
+_MAX_SIGNATURE_DOWNLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
 HTTP_REQUEST_TIMEOUT_SECONDS = 30
 HTTP_STREAM_CONNECT_TIMEOUT_SECONDS = 10
 HTTP_STREAM_READ_TIMEOUT_SECONDS = 120

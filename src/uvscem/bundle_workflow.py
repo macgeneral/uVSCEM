@@ -116,8 +116,11 @@ def export_offline_bundle(
     # Import here to avoid a circular dependency (bundle_workflow ← extension_manager).
     from uvscem.extension_manager import CodeExtensionManager
 
+    _log_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(_log_level, int):
+        raise ValueError(f"Invalid log level: {log_level!r}")
     logging.basicConfig(
-        level=(getattr(logging, log_level.upper())),
+        level=_log_level,
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
 
@@ -256,8 +259,11 @@ def import_offline_bundle(
     """Install extensions from a previously exported offline bundle."""
     from uvscem.extension_manager import CodeExtensionManager
 
+    _log_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(_log_level, int):
+        raise ValueError(f"Invalid log level: {log_level!r}")
     logging.basicConfig(
-        level=(getattr(logging, log_level.upper())),
+        level=_log_level,
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
 
@@ -326,6 +332,14 @@ def import_offline_bundle(
             signature_filename = str(entry.get("signature_filename", ""))
             source_vsix = artifacts_dir.joinpath(filename)
             source_signature = artifacts_dir.joinpath(signature_filename)
+            artifacts_dir_resolved = artifacts_dir.resolve()
+            try:
+                source_vsix.resolve().relative_to(artifacts_dir_resolved)
+                source_signature.resolve().relative_to(artifacts_dir_resolved)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Artifact path for {extension_id} escapes artifacts directory"
+                ) from exc
             if not source_vsix.is_file() or not source_signature.is_file():
                 raise FileNotFoundError(
                     f"Missing offline artifact(s) for {extension_id}: {filename}, {signature_filename}"

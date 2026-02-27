@@ -43,6 +43,7 @@ This repository is Python 3.10+. Optimize for small, composable modules with exp
 
 ## Error handling and security
 
+- Always keep security implications and edge cases in mind when implementing functionality. Aim for a secure-by-default solution and only allow bypasses when they are explicitly necessary and clearly documented.
 - Never leak credentials or tokens in logs/exceptions.
 - Fail with clear, actionable errors.
 - Keep retries and fallback behavior explicit and easy to reason about.

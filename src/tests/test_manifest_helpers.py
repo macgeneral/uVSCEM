@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from uvscem import bundle_io, marketplace
 
 
@@ -36,3 +38,62 @@ def test_build_extension_manifest_entry_coerces_non_list_fields(tmp_path: Path) 
 
     assert entry["dependencies"] == []
     assert entry["extension_pack"] == []
+
+
+def test_resolve_bundled_vsce_sign_binary_rejects_path_traversal(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+
+    # A binary relative path that tries to escape the bundle directory.
+    malicious_vsce_sign_info = {
+        "binaries": [
+            {"target": "linux-x64", "binary": "../../etc/passwd", "sha256": ""}
+        ]
+    }
+    with pytest.raises(ValueError, match="escapes bundle directory"):
+        bundle_io.resolve_bundled_vsce_sign_binary(
+            bundle_dir=bundle_dir,
+            vsce_sign_info=malicious_vsce_sign_info,
+            current_target="linux-x64",
+        )
+
+
+def test_resolve_bundled_vsce_sign_binary_legacy_path_rejects_traversal(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+
+    # Legacy single-binary path that tries to escape the bundle directory.
+    malicious_vsce_sign_info = {"binary": "../outside/vsce-sign"}
+    with pytest.raises(ValueError, match="escapes bundle directory"):
+        bundle_io.resolve_bundled_vsce_sign_binary(
+            bundle_dir=bundle_dir,
+            vsce_sign_info=malicious_vsce_sign_info,
+            current_target="linux-x64",
+        )
+
+
+def test_resolve_bundled_vsce_sign_binary_accepts_valid_path(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    (bundle_dir / "vsce-sign" / "linux-x64").mkdir(parents=True)
+    (bundle_dir / "vsce-sign" / "linux-x64" / "vsce-sign").write_bytes(b"bin")
+
+    vsce_sign_info = {
+        "binaries": [
+            {
+                "target": "linux-x64",
+                "binary": "vsce-sign/linux-x64/vsce-sign",
+                "sha256": "abc",
+            }
+        ]
+    }
+    binary_path, sha256 = bundle_io.resolve_bundled_vsce_sign_binary(
+        bundle_dir=bundle_dir,
+        vsce_sign_info=vsce_sign_info,
+        current_target="linux-x64",
+    )
+    assert binary_path == bundle_dir / "vsce-sign" / "linux-x64" / "vsce-sign"
+    assert sha256 == "abc"

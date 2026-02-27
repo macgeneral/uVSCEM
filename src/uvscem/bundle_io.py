@@ -100,7 +100,21 @@ def resolve_bundled_vsce_sign_binary(
             )
 
         binary_rel = str(selected.get("binary", ""))
-        return bundle_dir.joinpath(binary_rel), str(selected.get("sha256", ""))
+        binary_path = bundle_dir.joinpath(binary_rel)
+        try:
+            binary_path.resolve().relative_to(bundle_dir.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                f"Bundled vsce-sign path escapes bundle directory: {binary_rel}"
+            ) from exc
+        return binary_path, str(selected.get("sha256", ""))
 
     binary_rel = str(vsce_sign_info.get("binary", ""))
-    return bundle_dir.joinpath(binary_rel), ""
+    binary_path = bundle_dir.joinpath(binary_rel)
+    try:
+        binary_path.resolve().relative_to(bundle_dir.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"Bundled vsce-sign path escapes bundle directory: {binary_rel}"
+        ) from exc
+    return binary_path, ""

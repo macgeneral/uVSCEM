@@ -1312,7 +1312,9 @@ def test_install_extension_warns_for_non_zip_when_managed_dir_missing(
     bare_manager._vscode_root = tmp_path / "vscode-root"
     monkeypatch.setattr(bare_manager, "install_extension_manually", _manual)
     monkeypatch.setattr(
-        extension_manager.logger, "warning", lambda msg: warnings.append(msg)
+        extension_manager.logger,
+        "warning",
+        lambda msg, *args: warnings.append(msg % args if args else msg),
     )
     monkeypatch.setattr(
         extension_manager.subprocess,
@@ -4165,4 +4167,88 @@ def test_stream_download_to_target_enforces_max_bytes(tmp_path: Path) -> None:
             temp_prefix="test.",
             timeout=(5, 10),
             max_bytes=5,
+        )
+
+
+def test_install_rejects_invalid_log_level(tmp_path: Path) -> None:
+    config_file = tmp_path / "devcontainer.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid log level"):
+        extension_manager.install(
+            config_name=str(config_file),
+            log_level="verbose",
+        )
+
+
+def test_import_offline_bundle_rejects_invalid_log_level(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "manifest.json").write_text('{"schema_version": 1}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid log level"):
+        bundle_workflow.import_offline_bundle(
+            bundle_path=str(bundle_dir),
+            log_level="verbose",
+            verify_manifest_signature=False,
+        )
+
+
+def test_import_offline_bundle_rejects_artifact_path_traversal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malicious manifest with a traversal filename must raise a validation error."""
+    bundle_path = tmp_path / "bundle"
+    artifacts = bundle_path / "artifacts"
+    artifacts.mkdir(parents=True)
+
+    # Place a real file *outside* the artifacts dir that the traversal would reach.
+    (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
+
+    manifest = {
+        "schema_version": 1,
+        "ordered_extensions": ["pub.ext"],
+        "extensions": [
+            {
+                "id": "pub.ext",
+                "version": "1.0.0",
+                "filename": "../secret.txt",
+                "signature_filename": "../secret.txt",
+                "installation_metadata": {},
+                "dependencies": [],
+                "extension_pack": [],
+            }
+        ],
+        "vsce_sign": {"binary": "vsce-sign/vsce-sign"},
+    }
+    (bundle_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    class _FakeManager:
+        def __init__(
+            self, config_name: str, code_path: str, target_directory: str = ""
+        ) -> None:
+            self.target_path = tmp_path / "cache"
+            self.target_path.mkdir(parents=True, exist_ok=True)
+            self.extension_metadata: dict = {}
+            self.extensions: list = []
+            self.installed: list = []
+            self.vsce_sign_binary = None
+
+        def extensions_json_path(self) -> Path:
+            return tmp_path / "extensions.json"
+
+        async def find_installed(self) -> list:
+            return []
+
+    monkeypatch.setattr(extension_manager, "CodeExtensionManager", _FakeManager)
+
+    from uvscem.exceptions import OfflineBundleImportValidationError
+
+    with pytest.raises(
+        OfflineBundleImportValidationError, match="escapes artifacts directory"
+    ):
+        bundle_workflow.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            verify_manifest_signature=False,
         )

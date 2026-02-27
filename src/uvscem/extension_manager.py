@@ -38,6 +38,8 @@ from uvscem.install_engine import (
     stream_download_to_target,
 )
 from uvscem.internal_config import (
+    _MAX_SIGNATURE_DOWNLOAD_BYTES,
+    _MAX_VSIX_DOWNLOAD_BYTES,
     DEFAULT_USER_AGENT,
     HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
     HTTP_STREAM_READ_TIMEOUT_SECONDS,
@@ -519,6 +521,7 @@ class CodeExtensionManager:
                     HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
                     HTTP_STREAM_READ_TIMEOUT_SECONDS,
                 ),
+                max_bytes=_MAX_VSIX_DOWNLOAD_BYTES,
             )
 
         return await asyncio.to_thread(_download_sync)
@@ -565,6 +568,7 @@ class CodeExtensionManager:
                     HTTP_STREAM_CONNECT_TIMEOUT_SECONDS,
                     HTTP_STREAM_READ_TIMEOUT_SECONDS,
                 ),
+                max_bytes=_MAX_SIGNATURE_DOWNLOAD_BYTES,
             )
 
         return await asyncio.to_thread(_download_sync)
@@ -657,7 +661,9 @@ class CodeExtensionManager:
         metadata = self.extension_metadata.get(extension_id, {})
 
         if file_path.is_file():
-            logger.info(f"File {file_name} exists - skipping download...")
+            logger.info(
+                "File %s exists - skipping download...", _sanitize_log_str(file_name)
+            )
         else:
             file_path = await self.download_extension(extension_id)
 
@@ -679,7 +685,11 @@ class CodeExtensionManager:
                 f"SECURITY WARNING: Missing signature metadata for extension {extension_id}; "
                 f"installing anyway because --allow-unsigned is set (INSECURE)"
             )
-            logger.warning(msg)
+            logger.warning(
+                "SECURITY WARNING: Missing signature metadata for extension %s; "
+                "installing anyway because --allow-unsigned is set (INSECURE)",
+                _sanitize_log_str(extension_id),
+            )
             print(msg, file=sys.stderr)
 
         # installing extension packs doesn't work because the code install routine tries fetching other packages itself
@@ -718,11 +728,12 @@ class CodeExtensionManager:
                     )
                     break
                 except subprocess.CalledProcessError as exc:
-                    logger.error(f"Something went wrong: {exc}")
+                    logger.error("Something went wrong: %s", exc)
                     await self.socket_manager.find_socket(update_environment=True)
                     if attempt >= max_retries:
                         logger.warning(
-                            f"Code CLI installation failed for {extension_id}; falling back to manual VSIX extraction"
+                            "Code CLI installation failed for %s; falling back to manual VSIX extraction",
+                            _sanitize_log_str(extension_id),
                         )
                         try:
                             await self.install_extension_manually(
@@ -760,7 +771,8 @@ class CodeExtensionManager:
                     )
                 else:
                     logger.warning(
-                        f"Installed VSIX for {extension_id} is not a zip archive, skipping managed extraction"
+                        "Installed VSIX for %s is not a zip archive, skipping managed extraction",
+                        _sanitize_log_str(extension_id),
                     )
 
     async def find_installed(self) -> list[InstalledEntry]:
@@ -804,7 +816,9 @@ class CodeExtensionManager:
             )
             if (extension_name, extension_version) in installed_pairs:
                 logger.info(
-                    f"Skipping {extension} ({extension_version}), already installed."
+                    "Skipping %s (%s), already installed.",
+                    _sanitize_log_str(extension),
+                    extension_version,
                 )
                 continue
             filtered_extensions.append(extension)
@@ -841,8 +855,11 @@ def install(
     ca_bundle: str = "",
 ) -> None:
     """Install all extensions listed in devcontainer.json."""
+    _log_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(_log_level, int):
+        raise ValueError(f"Invalid log level: {log_level!r}")
     logging.basicConfig(
-        level=(getattr(logging, log_level.upper())),
+        level=_log_level,
         format="%(relativeCreated)d [%(levelname)s] %(message)s",
     )
     logger.info("Attempting to install all necessary DevContainer extensions.")
@@ -969,7 +986,7 @@ def main() -> None:
             logger.error(exc)
             sys.exit(1)
         except Exception as exc:
-            logger.error(f"Unexpected error: {exc}")
+            logger.error("Unexpected error: %s", exc)
             logger.debug("Traceback:", exc_info=True)
             sys.exit(1)
         return
@@ -996,7 +1013,7 @@ def main() -> None:
             logger.error(exc)
             sys.exit(1)
         except Exception as exc:
-            logger.error(f"Unexpected error: {exc}")
+            logger.error("Unexpected error: %s", exc)
             logger.debug("Traceback:", exc_info=True)
             sys.exit(1)
         return
@@ -1021,7 +1038,7 @@ def main() -> None:
         logger.error(exc)
         sys.exit(1)
     except Exception as exc:
-        logger.error(f"Unexpected error: {exc}")
+        logger.error("Unexpected error: %s", exc)
         logger.debug("Traceback:", exc_info=True)
         sys.exit(1)
 
