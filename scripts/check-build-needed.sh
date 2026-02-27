@@ -121,11 +121,9 @@ cmd_decide_skip() {
   fi
 
   git fetch --all --quiet
-  if ! commit_touches_patterns "${sha}" "${patterns[@]}"; then
-    output_skip "No relevant file changes, skipping build."
-    return 0
-  fi
 
+  # Check for an existing successful run for this SHA first. If one exists it
+  # is always safe to skip, regardless of what HEAD itself touches.
   if [[ -n "${workflow}" && "${workflow}" != 'none' ]]; then
     run_id=$(query_run_id "${sha}" "${repo}" "${workflow}")
     if [[ -n "${run_id}" ]]; then
@@ -134,7 +132,45 @@ cmd_decide_skip() {
     fi
   fi
 
-  output_build "Relevant changes detected and no prior successful build found, proceeding."
+  # No prior successful run for this SHA. When multiple commits are pushed at
+  # once GitHub only triggers workflows on HEAD — checking only the HEAD commit
+  # for file changes would miss Python changes from earlier commits in the same
+  # push. Instead, scan the range of commits since the last successful run.
+  local base_sha=""
+  if [[ -n "${workflow}" && "${workflow}" != 'none' ]]; then
+    while IFS= read -r candidate; do
+      [[ "${candidate}" == "${sha}" ]] && continue
+      local candidate_run
+      candidate_run=$(query_run_id "${candidate}" "${repo}" "${workflow}" 2>/dev/null || true)
+      if [[ -n "${candidate_run}" ]]; then
+        base_sha="${candidate}"
+        break
+      fi
+    done <<< "$(git log --format=%H --max-count=50)"
+  fi
+
+  local commits_to_check
+  if [[ -n "${base_sha}" ]]; then
+    commits_to_check=$(git log --format=%H "${base_sha}..${sha}")
+  else
+    # No prior successful run found in recent history — check HEAD only.
+    commits_to_check="${sha}"
+  fi
+
+  local found_relevant=""
+  while IFS= read -r commit; do
+    if commit_touches_patterns "${commit}" "${patterns[@]}"; then
+      found_relevant="yes"
+      break
+    fi
+  done <<< "${commits_to_check}"
+
+  if [[ -z "${found_relevant}" ]]; then
+    output_skip "No relevant file changes since last successful ${workflow} run, skipping build."
+    return 0
+  fi
+
+  output_build "Relevant changes detected since last successful ${workflow} run, proceeding."
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
