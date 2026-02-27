@@ -157,12 +157,34 @@ Import an offline bundle without network access:
 uvscem import --bundle-path ./uvscem-offline-bundle --strict-offline
 ```
 
+By default, `import` verifies `manifest.json.asc` when present. If you need legacy behavior, you can explicitly disable this check:
+
+```bash
+uvscem import --bundle-path ./uvscem-offline-bundle --skip-manifest-signature-verification
+```
+
 Optional manifest authenticity checks:
 
 ```bash
 uvscem export --config-name ./devcontainer.json --manifest-signing-key YOUR_GPG_KEY_ID
 uvscem import --bundle-path ./uvscem-offline-bundle --verify-manifest-signature
 ```
+
+Extension installs require marketplace signature metadata by default. To allow unsigned extension installation (not recommended), use:
+
+```bash
+uvscem install --config-name ./devcontainer.json --allow-unsigned
+```
+
+For edge proxy/mirror setups, you can relax URL/TLS behavior explicitly:
+
+```bash
+uvscem install --config-name ./devcontainer.json --allow-untrusted-urls
+uvscem install --config-name ./devcontainer.json --disable-ssl
+uvscem install --config-name ./devcontainer.json --ca-bundle /path/to/corporate-root-ca.pem
+```
+
+The same flags are available on `export`.
 
 ## Proxy note
 
@@ -175,6 +197,7 @@ uVSCEM follows standard proxy environment variables such as `HTTP_PROXY`, `HTTPS
 | `UVSCEM_VSCODE_ROOT` | Override the VS Code data root (where `extensions/` and `extensions.json` live). Useful when auto-detection resolves the wrong path on macOS or Windows. |
 | `UVSCEM_RUNTIME` | Override the detected runtime environment. Accepted values: `local`, `vscode-server`, `vscode-remote`. |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Standard proxy variables respected by all HTTP requests. |
+| `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` | Override the CA bundle used by Requests when no `--ca-bundle` CLI flag is provided. |
 
 Example:
 
