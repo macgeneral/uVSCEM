@@ -20,6 +20,7 @@ from uvscem.exceptions import (
     InstallationWorkflowError,
     OfflineBundleExportError,
     OfflineBundleImportExecutionError,
+    OfflineBundleImportMissingFileError,
     OfflineModeError,
 )
 from uvscem.extension_manager import CodeExtensionManager
@@ -34,7 +35,7 @@ def bare_manager(tmp_path: Path) -> CodeExtensionManager:
     manager = CodeExtensionManager.__new__(CodeExtensionManager)
     manager.extension_dependencies = defaultdict(set)
     manager.extension_metadata = {}
-    manager.api_manager = SimpleNamespace()
+    manager.api_manager = SimpleNamespace(session=SimpleNamespace(verify=True))
     manager.socket_manager = SimpleNamespace(find_socket=_noop_socket)
     manager.code_binary = "code"
     manager.dev_container_config_path = tmp_path / "devcontainer.json"
@@ -42,6 +43,10 @@ def bare_manager(tmp_path: Path) -> CodeExtensionManager:
     manager.installed = []
     manager.target_path = tmp_path / "cache"
     manager.target_path.mkdir(parents=True, exist_ok=True)
+    manager.allow_unsigned = True
+    manager.allow_untrusted_urls = False
+    manager.disable_ssl = False
+    manager.ca_bundle = ""
     return manager
 
 
@@ -314,7 +319,8 @@ def test_install_async_iterates_extensions_and_sleeps(
         called.append("sleep")
 
     @contextmanager
-    def _noop_provisioner(install_dir):
+    def _noop_provisioner(install_dir, session=None):
+        del install_dir, session
         yield None
 
     monkeypatch.setattr(bare_manager, "exclude_installed", _exclude)
@@ -342,7 +348,10 @@ def test_download_extension_writes_and_moves_file(
     bare_manager: CodeExtensionManager,
 ) -> None:
     bare_manager.extension_metadata = {
-        "pub.ext": {"version": "1.0.0", "url": "https://download/file.vsix"}
+        "pub.ext": {
+            "version": "1.0.0",
+            "url": "https://marketplace.visualstudio.com/file.vsix",
+        }
     }
 
     class _Response:
@@ -377,11 +386,74 @@ def test_download_extension_fails_without_url(
         asyncio.run(bare_manager.download_extension("pub.ext"))
 
 
+def test_download_extension_rejects_untrusted_host(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "url": "https://example.invalid/file.vsix"}
+    }
+
+    with pytest.raises(ValueError, match="not trusted"):
+        asyncio.run(bare_manager.download_extension("pub.ext"))
+
+
+def test_download_extension_allows_untrusted_host_when_flag_enabled(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.allow_untrusted_urls = True
+    bare_manager.extension_metadata = {
+        "pub.ext": {"version": "1.0.0", "url": "https://example.invalid/file.vsix"}
+    }
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            assert chunk_size == 1024 * 8
+            yield b"ok"
+
+    bare_manager.api_manager = cast(
+        Any,
+        SimpleNamespace(
+            session=SimpleNamespace(get=lambda *args, **kwargs: _Response())
+        ),
+    )
+
+    downloaded = asyncio.run(bare_manager.download_extension("pub.ext"))
+
+    assert downloaded.is_file()
+    assert downloaded.read_bytes() == b"ok"
+
+
+def test_download_extension_fails_when_validated_url_is_empty(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "url": "https://marketplace.visualstudio.com/file.vsix",
+        }
+    }
+    monkeypatch.setattr(
+        extension_manager,
+        "_validate_download_url",
+        lambda *_args, **_kwargs: "",
+    )
+
+    with pytest.raises(ValueError, match="Missing download URL"):
+        asyncio.run(bare_manager.download_extension("pub.ext"))
+
+
 def test_download_extension_reuses_cached_file(
     bare_manager: CodeExtensionManager,
 ) -> None:
     bare_manager.extension_metadata = {
-        "pub.ext": {"version": "1.0.0", "url": "https://download/file.vsix"}
+        "pub.ext": {
+            "version": "1.0.0",
+            "url": "https://marketplace.visualstudio.com/file.vsix",
+        }
     }
     cached_path = bare_manager.target_path / bare_manager.get_filename("pub.ext")
     cached_path.write_bytes(b"cached")
@@ -407,7 +479,10 @@ def test_download_signature_archive_writes_and_moves_file(
     bare_manager: CodeExtensionManager,
 ) -> None:
     bare_manager.extension_metadata = {
-        "pub.ext": {"version": "1.0.0", "signature": "https://download/file.sigzip"}
+        "pub.ext": {
+            "version": "1.0.0",
+            "signature": "https://marketplace.visualstudio.com/file.sigzip",
+        }
     }
 
     class _Response:
@@ -442,11 +517,48 @@ def test_download_signature_archive_fails_without_url(
         asyncio.run(bare_manager.download_signature_archive("pub.ext"))
 
 
+def test_download_signature_archive_rejects_untrusted_host(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "signature": "https://example.invalid/file.sigzip",
+        }
+    }
+
+    with pytest.raises(ValueError, match="not trusted"):
+        asyncio.run(bare_manager.download_signature_archive("pub.ext"))
+
+
+def test_download_signature_archive_fails_when_validated_url_is_empty(
+    bare_manager: CodeExtensionManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "signature": "https://marketplace.visualstudio.com/file.sigzip",
+        }
+    }
+    monkeypatch.setattr(
+        extension_manager,
+        "_validate_download_url",
+        lambda *_args, **_kwargs: "",
+    )
+
+    with pytest.raises(ValueError, match="Missing signature URL"):
+        asyncio.run(bare_manager.download_signature_archive("pub.ext"))
+
+
 def test_download_signature_archive_reuses_cached_file(
     bare_manager: CodeExtensionManager,
 ) -> None:
     bare_manager.extension_metadata = {
-        "pub.ext": {"version": "1.0.0", "signature": "https://download/file.sigzip"}
+        "pub.ext": {
+            "version": "1.0.0",
+            "signature": "https://marketplace.visualstudio.com/file.sigzip",
+        }
     }
     cached_path = bare_manager.target_path / bare_manager.get_signature_filename(
         "pub.ext"
@@ -607,6 +719,27 @@ def test_install_extension_manually_can_skip_json_update(
     )
 
     assert called == []
+
+
+def test_install_extension_manually_rejects_unsafe_archive_member(
+    bare_manager: CodeExtensionManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "vscode-root"
+    monkeypatch.setattr(extension_manager, "vscode_root", root)
+    bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
+
+    vsix_path = tmp_path / "pub.ext-1.0.0.vsix"
+    with zipfile.ZipFile(vsix_path, "w") as archive:
+        archive.writestr("../outside.txt", "bad")
+
+    with pytest.raises(ValueError, match="Unsafe archive member path"):
+        asyncio.run(
+            bare_manager.install_extension_manually(
+                "pub.ext", vsix_path, update_json=False
+            )
+        )
 
 
 def test_update_extensions_json_success_path(
@@ -947,7 +1080,7 @@ def test_install_extension_verifies_signature_when_present(
         "pub.ext": {
             "version": "1.0.0",
             "extension_pack": [],
-            "signature": "https://download/file.sigzip",
+            "signature": "https://marketplace.visualstudio.com/file.sigzip",
         }
     }
     vsix_file = bare_manager.target_path / "pub.ext-1.0.0.vsix"
@@ -981,7 +1114,7 @@ def test_install_extension_downloads_missing_signature_archive_before_verify(
         "pub.ext": {
             "version": "1.0.0",
             "extension_pack": [],
-            "signature": "https://download/file.sigzip",
+            "signature": "https://marketplace.visualstudio.com/file.sigzip",
         }
     }
     vsix_file = bare_manager.target_path / "pub.ext-1.0.0.vsix"
@@ -1012,6 +1145,24 @@ def test_install_extension_downloads_missing_signature_archive_before_verify(
     assert called == ["download:pub.ext", "verify:pub.ext-1.0.0.sigzip"]
 
 
+def test_install_extension_requires_signature_by_default(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.allow_unsigned = False
+    bare_manager.extension_metadata = {
+        "pub.ext": {
+            "version": "1.0.0",
+            "extension_pack": [],
+            "signature": "",
+        }
+    }
+    file_path = bare_manager.target_path / "pub.ext-1.0.0.vsix"
+    file_path.write_text("payload")
+
+    with pytest.raises(ValueError, match="Missing signature metadata"):
+        asyncio.run(bare_manager.install_extension("pub.ext"))
+
+
 def test_install_extension_treats_error_text_as_failure_and_stops_at_max_retries(
     bare_manager: CodeExtensionManager,
     monkeypatch: pytest.MonkeyPatch,
@@ -1038,9 +1189,12 @@ def test_install_extension_treats_error_text_as_failure_and_stops_at_max_retries
         lambda *_args, **_kwargs: SimpleNamespace(stdout="Error: failure", stderr=""),
     )
 
-    asyncio.run(
-        bare_manager.install_extension("pub.ext", retries=extension_manager.max_retries)
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(
+            bare_manager.install_extension(
+                "pub.ext", retries=extension_manager.max_retries
+            )
+        )
 
     assert socket_calls == [True]
 
@@ -1071,9 +1225,12 @@ def test_install_extension_treats_stderr_error_as_failure(
         lambda *_args, **_kwargs: SimpleNamespace(stdout="", stderr="Error: boom"),
     )
 
-    asyncio.run(
-        bare_manager.install_extension("pub.ext", retries=extension_manager.max_retries)
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(
+            bare_manager.install_extension(
+                "pub.ext", retries=extension_manager.max_retries
+            )
+        )
 
     assert socket_calls == [True]
 
@@ -1116,6 +1273,18 @@ def test_exclude_installed_keeps_non_matching_entries(
     assert bare_manager.extensions == ["different.ext"]
 
 
+def test_exclude_installed_ignores_entries_without_identifier_or_version(
+    bare_manager: CodeExtensionManager,
+) -> None:
+    bare_manager.installed = [{"identifier": {}, "version": ""}]
+    bare_manager.extensions = ["pub.ext"]
+    bare_manager.extension_metadata = {"pub.ext": {"version": "1.0.0"}}
+
+    asyncio.run(bare_manager.exclude_installed())
+
+    assert bare_manager.extensions == ["pub.ext"]
+
+
 def test_extensions_json_path_uses_vscode_root(
     bare_manager: CodeExtensionManager,
     tmp_path: Path,
@@ -1141,11 +1310,22 @@ def test_cli_install_function_uses_expected_constructor_args(
 
     class _Manager:
         def __init__(
-            self, config_name: str, code_path: str, target_directory: str = ""
+            self,
+            config_name: str,
+            code_path: str,
+            target_directory: str = "",
+            allow_unsigned: bool = False,
+            allow_untrusted_urls: bool = False,
+            disable_ssl: bool = False,
+            ca_bundle: str = "",
         ) -> None:
             captured["config_name"] = config_name
             captured["code_path"] = code_path
             captured["target_directory"] = target_directory
+            captured["allow_unsigned"] = allow_unsigned
+            captured["allow_untrusted_urls"] = allow_untrusted_urls
+            captured["disable_ssl"] = disable_ssl
+            captured["ca_bundle"] = ca_bundle
 
         async def initialize(self) -> None:
             captured["initialized"] = True
@@ -1166,6 +1346,10 @@ def test_cli_install_function_uses_expected_constructor_args(
         "config_name": str(config_file),
         "code_path": str(code_path),
         "target_directory": str(target_path),
+        "allow_unsigned": False,
+        "allow_untrusted_urls": False,
+        "disable_ssl": False,
+        "ca_bundle": "",
         "initialized": True,
         "installed": True,
     }
@@ -1180,9 +1364,24 @@ def test_cli_install_function_maps_errors_to_installation_workflow_error(
 
     class _Manager:
         def __init__(
-            self, config_name: str, code_path: str, target_directory: str = ""
+            self,
+            config_name: str,
+            code_path: str,
+            target_directory: str = "",
+            allow_unsigned: bool = False,
+            allow_untrusted_urls: bool = False,
+            disable_ssl: bool = False,
+            ca_bundle: str = "",
         ) -> None:
-            del config_name, code_path, target_directory
+            del (
+                config_name,
+                code_path,
+                target_directory,
+                allow_unsigned,
+                allow_untrusted_urls,
+                disable_ssl,
+                ca_bundle,
+            )
 
         async def initialize(self) -> None:
             return None
@@ -1241,7 +1440,8 @@ def test_install_async_iterates_and_sleeps(
         called.append("sleep")
 
     @contextmanager
-    def _provisioner(install_dir):
+    def _provisioner(install_dir, session=None):
+        del session
         called.append(f"provision:{install_dir}")
         yield Path(tempfile.gettempdir()) / "vsce-sign"
         called.append("cleanup")
@@ -1381,9 +1581,12 @@ def test_install_extension_treats_error_text_as_failure_async(
         lambda *_args, **_kwargs: SimpleNamespace(stdout="", stderr="Error: boom"),
     )
 
-    asyncio.run(
-        bare_manager.install_extension("pub.ext", retries=extension_manager.max_retries)
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(
+            bare_manager.install_extension(
+                "pub.ext", retries=extension_manager.max_retries
+            )
+        )
 
     assert socket_calls == [True]
 
@@ -1430,13 +1633,19 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         extension_manager,
         "install",
-        lambda config_name, code_path, target_path, log_level: called.update(
-            {
-                "config_name": config_name,
-                "code_path": code_path,
-                "target_path": target_path,
-                "log_level": log_level,
-            }
+        lambda config_name, code_path, target_path, log_level, allow_unsigned, allow_untrusted_urls, disable_ssl, ca_bundle: (
+            called.update(
+                {
+                    "config_name": config_name,
+                    "code_path": code_path,
+                    "target_path": target_path,
+                    "log_level": log_level,
+                    "allow_unsigned": str(allow_unsigned),
+                    "allow_untrusted_urls": str(allow_untrusted_urls),
+                    "disable_ssl": str(disable_ssl),
+                    "ca_bundle": ca_bundle,
+                }
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1457,6 +1666,10 @@ def test_build_parser_and_main_command_path(monkeypatch: pytest.MonkeyPatch) -> 
         "code_path": "code-bin",
         "target_path": str(cache_path),
         "log_level": "debug",
+        "allow_unsigned": "False",
+        "allow_untrusted_urls": "False",
+        "disable_ssl": "False",
+        "ca_bundle": "",
     }
 
 
@@ -1478,7 +1691,7 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         extension_manager,
         "export_offline_bundle",
-        lambda config_name, bundle_path, target_path, code_path, log_level, vsce_sign_version, vsce_sign_targets, manifest_signing_key: (
+        lambda config_name, bundle_path, target_path, code_path, log_level, vsce_sign_version, vsce_sign_targets, manifest_signing_key, allow_untrusted_urls, disable_ssl, ca_bundle: (
             called.update(
                 {
                     "config_name": config_name,
@@ -1489,6 +1702,9 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
                     "vsce_sign_version": vsce_sign_version,
                     "vsce_sign_targets": vsce_sign_targets,
                     "manifest_signing_key": manifest_signing_key,
+                    "allow_untrusted_urls": str(allow_untrusted_urls),
+                    "disable_ssl": str(disable_ssl),
+                    "ca_bundle": ca_bundle,
                 }
             )
         ),
@@ -1520,7 +1736,71 @@ def test_main_routes_export_command(monkeypatch: pytest.MonkeyPatch) -> None:
         "vsce_sign_version": "2.0.6",
         "vsce_sign_targets": "current",
         "manifest_signing_key": "ABC123",
+        "allow_untrusted_urls": "False",
+        "disable_ssl": "False",
+        "ca_bundle": "",
     }
+
+
+def test_configure_http_session_disable_ssl_and_ca_bundle() -> None:
+    session = SimpleNamespace(verify=True)
+
+    extension_manager._configure_http_session(
+        session,
+        disable_ssl=False,
+        ca_bundle="/tmp/custom-ca.pem",
+    )
+    assert session.verify == "/tmp/custom-ca.pem"
+
+    extension_manager._configure_http_session(
+        session,
+        disable_ssl=True,
+        ca_bundle="/tmp/custom-ca.pem",
+    )
+    assert session.verify is False
+
+
+def test_configure_http_session_leaves_verify_unchanged_without_flags() -> None:
+    session = SimpleNamespace(verify="unchanged")
+
+    extension_manager._configure_http_session(
+        session,
+        disable_ssl=False,
+        ca_bundle="",
+    )
+
+    assert session.verify == "unchanged"
+
+
+def test_apply_network_options_without_api_manager_session() -> None:
+    manager = SimpleNamespace()
+
+    extension_manager._apply_network_options(
+        manager,
+        allow_unsigned=True,
+        allow_untrusted_urls=True,
+        disable_ssl=False,
+        ca_bundle="",
+    )
+
+    assert manager.allow_unsigned is True
+    assert manager.allow_untrusted_urls is True
+
+
+def test_apply_network_options_with_api_manager_session() -> None:
+    manager = SimpleNamespace(
+        api_manager=SimpleNamespace(session=SimpleNamespace(verify=True))
+    )
+
+    extension_manager._apply_network_options(
+        manager,
+        allow_unsigned=False,
+        allow_untrusted_urls=False,
+        disable_ssl=False,
+        ca_bundle="/tmp/custom-ca.pem",
+    )
+
+    assert manager.api_manager.session.verify == "/tmp/custom-ca.pem"
 
 
 def test_main_routes_import_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2104,6 +2384,7 @@ def test_import_offline_bundle_installs_extensions_from_bundle(
         code_path="code",
         target_path=str(tmp_path / "cache"),
         log_level="info",
+        verify_manifest_signature=False,
     )
 
     assert installed == ["publisher.demo"]
@@ -2195,6 +2476,7 @@ def test_import_offline_bundle_strict_offline_blocks_network_attempts(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
             strict_offline=True,
+            verify_manifest_signature=False,
         )
 
 
@@ -2277,6 +2559,7 @@ def test_import_offline_bundle_strict_offline_handles_missing_session(
         bundle_path=str(bundle_path),
         target_path=str(tmp_path / "cache"),
         strict_offline=True,
+        verify_manifest_signature=False,
     )
 
 
@@ -2352,6 +2635,7 @@ def test_import_offline_bundle_maps_execution_oserror(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -2428,12 +2712,16 @@ def test_import_offline_bundle_maps_runtimeerror_without_offline_marker(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
 def test_import_offline_bundle_raises_when_manifest_missing(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        extension_manager.import_offline_bundle(bundle_path=str(tmp_path / "missing"))
+    with pytest.raises(OfflineBundleImportMissingFileError):
+        extension_manager.import_offline_bundle(
+            bundle_path=str(tmp_path / "missing"),
+            verify_manifest_signature=False,
+        )
 
 
 def test_import_offline_bundle_raises_when_manifest_signature_missing(
@@ -2571,7 +2859,10 @@ def test_import_offline_bundle_raises_for_unsupported_schema(
     )
 
     with pytest.raises(ValueError, match="Unsupported offline bundle schema version"):
-        extension_manager.import_offline_bundle(bundle_path=str(bundle_path))
+        extension_manager.import_offline_bundle(
+            bundle_path=str(bundle_path),
+            verify_manifest_signature=False,
+        )
 
 
 def test_import_offline_bundle_raises_when_extension_entry_missing(
@@ -2615,6 +2906,7 @@ def test_import_offline_bundle_raises_when_extension_entry_missing(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -2664,6 +2956,7 @@ def test_import_offline_bundle_raises_when_artifacts_missing(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -2718,6 +3011,7 @@ def test_import_offline_bundle_raises_when_artifact_checksum_mismatch(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -2772,6 +3066,7 @@ def test_import_offline_bundle_raises_when_signature_checksum_mismatch(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -2838,6 +3133,7 @@ def test_import_offline_bundle_raises_when_no_matching_vsce_sign_target(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -2916,6 +3212,7 @@ def test_import_offline_bundle_accepts_single_nonmatching_vsce_sign_target(
     extension_manager.import_offline_bundle(
         bundle_path=str(bundle_path),
         target_path=str(tmp_path / "cache"),
+        verify_manifest_signature=False,
     )
 
 
@@ -2977,6 +3274,7 @@ def test_import_offline_bundle_raises_when_vsce_sign_checksum_mismatch(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -3027,6 +3325,7 @@ def test_import_offline_bundle_raises_when_vsce_sign_binary_missing(
         extension_manager.import_offline_bundle(
             bundle_path=str(bundle_path),
             target_path=str(tmp_path / "cache"),
+            verify_manifest_signature=False,
         )
 
 
@@ -3110,6 +3409,7 @@ def test_import_offline_bundle_keeps_existing_extensions_json(
         code_path="code",
         target_path=str(tmp_path / "cache"),
         log_level="info",
+        verify_manifest_signature=False,
     )
 
     assert (

@@ -11,11 +11,22 @@ import pytest
 
 class _ManagerStub:
     def __init__(
-        self, config_name: str, code_path: str, target_directory: str = ""
+        self,
+        config_name: str,
+        code_path: str,
+        target_directory: str = "",
+        allow_unsigned: bool = False,
+        allow_untrusted_urls: bool = False,
+        disable_ssl: bool = False,
+        ca_bundle: str = "",
     ) -> None:
         self.config_name = config_name
         self.code_path = code_path
         self.target_directory = target_directory
+        self.allow_unsigned = allow_unsigned
+        self.allow_untrusted_urls = allow_untrusted_urls
+        self.disable_ssl = disable_ssl
+        self.ca_bundle = ca_bundle
         self.install_called = False
         self.initialized = False
 
@@ -107,6 +118,9 @@ def test_cli_help_shows_core_options(
     assert "--code-path" in help_text
     assert "--target-path" in help_text
     assert "--log-level" in help_text
+    assert "--allow-untrusted-urls" in help_text
+    assert "--disable-ssl" in help_text
+    assert "INSECURE" in help_text
 
 
 def test_cli_invokes_manager_with_expected_arguments(
@@ -121,12 +135,22 @@ def test_cli_invokes_manager_with_expected_arguments(
     config_file.write_text("{}", encoding="utf-8")
 
     def _factory(
-        config_name: str, code_path: str, target_directory: str = ""
+        config_name: str,
+        code_path: str,
+        target_directory: str = "",
+        allow_unsigned: bool = False,
+        allow_untrusted_urls: bool = False,
+        disable_ssl: bool = False,
+        ca_bundle: str = "",
     ) -> _ManagerStub:
         manager = _ManagerStub(
             config_name=config_name,
             code_path=code_path,
             target_directory=target_directory,
+            allow_unsigned=allow_unsigned,
+            allow_untrusted_urls=allow_untrusted_urls,
+            disable_ssl=disable_ssl,
+            ca_bundle=ca_bundle,
         )
         captured["manager"] = manager
         return manager
