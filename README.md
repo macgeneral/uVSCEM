@@ -111,6 +111,8 @@ This installs (and updates) extensions listed in your config each time the conta
 
 ## Commands
 
+> Full CLI reference (all options and reasoning): [docs/cli.md](docs/cli.md)
+
 Install extensions directly:
 
 ```bash
