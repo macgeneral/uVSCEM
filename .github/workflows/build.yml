@@ -53,11 +53,11 @@ jobs:
       matrix:
         os:
           - name: Linux (x64)
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
             artifact: uvscem-linux-x64
             bin: uvscem-linux-x64
           - name: Linux (arm64)
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             artifact: uvscem-linux-arm64
             bin: uvscem-linux-arm64
           - name: macOS (arm64)
@@ -89,15 +89,25 @@ jobs:
         run: pip install .
 
       - name: Write version constant for Nuitka
+        id: pkg-version
         shell: python
         run: |
           import importlib.metadata
+          import os
+          import re
           import uvscem
           from pathlib import Path
           v = importlib.metadata.version("uvscem")
           Path(uvscem.__file__).parent.joinpath("_version.py").write_text(
               f'__version__ = "{v}"\n'
           )
+          # Nuitka product-version must be numeric X.Y.Z only — strip PEP 440
+          # pre/post/dev/local suffixes (e.g. "1.2.3.post1+abc" → "1.2.3").
+          numeric = re.match(r"^(\d+\.\d+\.\d+)", v)
+          nuitka_version = numeric.group(1) if numeric else "0.0.0"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"version={v}\n")
+              fh.write(f"nuitka_version={nuitka_version}\n")
 
       - name: Build binary
         uses: Nuitka/Nuitka-Action@0d4e22d4b66062a13d120f6948dd90170be04b3a # v1.4
@@ -106,6 +116,13 @@ jobs:
           output-file: ${{ matrix.os.artifact }}
           mode: onefile
           include-package: uvscem
+          product-name: uvscem
+          product-version: ${{ steps.pkg-version.outputs.nuitka_version }}
+          # Skip zstd compression — near-instant extraction on first run.
+          onefile-no-compression: true
+          # Stable per-version cache dir — extraction is skipped entirely on
+          # subsequent launches once the payload has been extracted once.
+          onefile-tempdir-spec: "{CACHE_DIR}/{PRODUCT}/{VERSION}"
 
       - name: Smoke test binary
         shell: bash
