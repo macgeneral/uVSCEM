@@ -33,10 +33,10 @@ dev = [
 	"ruff>=0.2.2",
 	"ty>=0.0.18",
 	"pytest-cov>=5.0.0",
-	"uv-dynamic-versioning>=0.8.0",
+	"uv-dynamic-versioning>=0.14.0",
 ]
 publish = [
-	"uv-dynamic-versioning>=0.8.0",
+	"uv-dynamic-versioning>=0.14.0",
 ]
 
 [build-system]
