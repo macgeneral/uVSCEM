@@ -42,9 +42,6 @@ class VsceSignBootstrapError(RuntimeError):
 
 
 class RegistrySession(Protocol):
-    # Controls TLS certificate verification; mirrors requests.Session.verify.
-    verify: bool | str
-
     def get(
         self, url: str, *, timeout: int, stream: bool = False
     ) -> requests.Response: ...

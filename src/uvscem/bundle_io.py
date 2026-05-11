@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -82,7 +83,7 @@ def build_bundle_manifest(
 
 def resolve_bundled_vsce_sign_binary(
     bundle_dir: Path,
-    vsce_sign_info: JsonMap,
+    vsce_sign_info: Mapping[str, object],
     current_target: str,
 ) -> tuple[Path, str]:
     binaries = _as_map_list(vsce_sign_info.get("binaries", []))

@@ -148,7 +148,9 @@ def _configure_http_session(
         ca_path = Path(ca_bundle)
         if not ca_path.is_file():
             raise ValueError(f"CA bundle path is not a readable file: {ca_bundle}")
-        session.verify = ca_bundle
+        # requests.Session.verify accepts str (CA bundle path) at runtime, but
+        # ty infers the attribute as bool from the implementation source.
+        session.verify = ca_bundle  # ty: ignore[invalid-assignment]
 
 
 def _apply_network_options(
@@ -385,12 +387,18 @@ class CodeExtensionManager:
         parsed_config: dict[str, object] = await asyncio.to_thread(
             lambda: json5.loads(self.dev_container_config_path.read_text())
         )
-        customizations = parsed_config.get("customizations", {})
-        if not isinstance(customizations, dict):
-            customizations = {}
-        vscode = customizations.get("vscode", {})
-        if not isinstance(vscode, dict):
-            vscode = {}
+        raw_customizations = parsed_config.get("customizations", {})
+        customizations: dict[str, object] = (
+            cast("dict[str, object]", raw_customizations)
+            if isinstance(raw_customizations, dict)
+            else {}
+        )
+        raw_vscode = customizations.get("vscode", {})
+        vscode: dict[str, object] = (
+            cast("dict[str, object]", raw_vscode)
+            if isinstance(raw_vscode, dict)
+            else {}
+        )
         extensions_value = vscode.get("extensions", [])
         raw_extensions: list[str] = (
             [item for item in extensions_value if isinstance(item, str)]

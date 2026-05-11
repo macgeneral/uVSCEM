@@ -30,7 +30,7 @@ class _NaiveForwardProxyHandler(http.server.BaseHTTPRequestHandler):
     timeout = 10
 
     def do_CONNECT(self) -> None:
-        threading.current_thread()._uvscem_proxy_handler = True  # type: ignore[attr-defined]
+        threading.current_thread()._uvscem_proxy_handler = True  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
         target_host, _, target_port_raw = self.path.partition(":")
         target_port = int(target_port_raw) if target_port_raw else 443
 

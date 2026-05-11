@@ -352,7 +352,7 @@ def test_get_uvscem_version_prefers_version_module(
     from uvscem.internal_config import _get_uvscem_version
 
     version_module = types.ModuleType("uvscem._version")
-    version_module.__version__ = "9.9.9"  # type: ignore[attr-defined]
+    version_module.__version__ = "9.9.9"  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
     monkeypatch.setitem(sys.modules, "uvscem._version", version_module)
 
     assert _get_uvscem_version() == "9.9.9"
