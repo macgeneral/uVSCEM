@@ -86,7 +86,7 @@ jobs:
             uv.lock
 
       - name: Cache virtual environment
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('uv.lock') }}
@@ -95,7 +95,7 @@ jobs:
 
       - name: Cache integration test artifacts
         if: runner.os == 'Linux'
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .tmp/uvscem-test-artifacts
           key: ${{ runner.os }}-integration-artifacts-v2-${{ hashFiles('src/tests/assets/test_extensions.json', 'src/tests/test_integration_slow.py', 'src/uvscem/extension_manager.py', 'pyproject.toml') }}
@@ -159,7 +159,7 @@ jobs:
             uv.lock
 
       - name: Cache virtual environment
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .venv
           key: ${{ runner.os }}-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('uv.lock') }}
